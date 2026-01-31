@@ -50,14 +50,17 @@ echo "      Batch Size: 32 | Workers: 16 | Epochs: 50"
 echo "      Estimated Time: ~6 hours"
 echo ""
 
+# Handle memory fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 python train.py \
     --model_name MyEfficientLFNet \
     --angRes 5 \
     --scale_factor 4 \
-    --batch_size 32 \
+    --batch_size 16 \
     --lr 0.0005 \
     --epoch 50 \
-    --num_workers 16 \
+    --num_workers 8 \
     --device cuda:0
 
 echo ""
