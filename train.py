@@ -144,7 +144,7 @@ def main(args):
 
 
         ''' Validation '''
-        step = 1
+        step = 5
         if (idx_epoch + 1)%step==0 or idx_epoch > args.epoch-step:
             with torch.no_grad():
                 ''' Create Excel for PSNR/SSIM '''
