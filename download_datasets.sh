@@ -1,18 +1,8 @@
 #!/bin/bash
 # ============================================================================
-# NTIRE 2026 LF-SR - Dataset Download Script
+# NTIRE 2026 LF-SR - Dataset Download Script (Individual Links)
 # ============================================================================
-# Downloads all training datasets from Google Drive and extracts them.
-#
-# Source: https://drive.google.com/drive/folders/1kxAGVzMTg4R-qncuj8x2qWqBmlQdd3zC
-#
-# Expected files:
-#   - EPFL.zip           (20.46 GB)
-#   - HCI_new.zip        (1.54 GB)
-#   - HCI_old.zip        (3.2 GB)
-#   - INRIA_Lytro.zip    (7.97 GB)
-#   - Stanford_Gantry.zip(3.86 GB)
-#   Total: ~37 GB
+# Downloads all training datasets from Google Drive individually.
 # ============================================================================
 
 set -e
@@ -41,26 +31,41 @@ if ! command -v gdown &> /dev/null; then
     pip install gdown -q
 fi
 
-# Google Drive folder ID (NEW LINK)
-GDRIVE_FOLDER="1j3F9iD5SqAl14LEAaOdN8wTnHrYuKwGd"
-
 # Create datasets directory
 mkdir -p datasets
-
-echo -e "${YELLOW}[1/3] Downloading datasets from Google Drive...${NC}"
-echo "      This will download ~37 GB. Please be patient."
-echo ""
-
-# Download entire folder
 cd datasets
-gdown --folder "https://drive.google.com/drive/folders/${GDRIVE_FOLDER}" --remaining-ok
+
+download_file() {
+    local id=$1
+    local name=$2
+    echo -e "${YELLOW}Downloading $name...${NC}"
+    if [ -f "$name" ]; then
+        echo "  $name already exists. Skipping."
+    else
+        # Try gdown with ID
+        gdown "$id" -O "$name" || echo -e "${RED}Failed to download $name${NC}"
+    fi
+}
+
+echo -e "${YELLOW}[1/3] Downloading datasets...${NC}"
+
+# Stanford_Gantry
+download_file "1stqpt2c0LCbglZg8rjipCoPP4o-NC9q3" "Stanford_Gantry.zip"
+
+# INRIA_Lytro
+download_file "1XNMTwczPpooktQUjVWLjgQpXRi-Gf4RQ" "INRIA_Lytro.zip"
+
+# HCI_old
+download_file "1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG" "HCI_old.zip"
+
+# HCI_new
+download_file "1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9" "HCI_new.zip"
+
+# EPFL
+download_file "19aBn1DvW4ynSLjAPhDeB30p_umwBO8EN" "EPFL.zip"
 
 echo ""
 echo -e "${YELLOW}[2/3] Extracting ZIP files...${NC}"
-
-# Fix for gdown creating a subfolder (e.g. training_nicre/)
-# Move all ZIPs to current directory
-mv */*.zip . 2>/dev/null || true
 
 # Extract each dataset
 for ZIP in EPFL.zip HCI_new.zip HCI_old.zip INRIA_Lytro.zip Stanford_Gantry.zip; do
@@ -70,23 +75,32 @@ for ZIP in EPFL.zip HCI_new.zip HCI_old.zip INRIA_Lytro.zip Stanford_Gantry.zip;
         unzip -q -o "$ZIP" -d "./${DS_NAME}_temp"
         
         # Handle nested structure (Dataset/Dataset/training -> Dataset/training)
-        if [ -d "./${DS_NAME}_temp/${DS_NAME}/${DS_NAME}/training" ]; then
-            mkdir -p "./${DS_NAME}/training"
-            mv "./${DS_NAME}_temp/${DS_NAME}/${DS_NAME}/training/"* "./${DS_NAME}/training/" 2>/dev/null || true
-        elif [ -d "./${DS_NAME}_temp/${DS_NAME}/training" ]; then
-            mkdir -p "./${DS_NAME}/training"
-            mv "./${DS_NAME}_temp/${DS_NAME}/training/"* "./${DS_NAME}/training/" 2>/dev/null || true
-        elif [ -d "./${DS_NAME}_temp/training" ]; then
-            mkdir -p "./${DS_NAME}/training"
-            mv "./${DS_NAME}_temp/training/"* "./${DS_NAME}/training/" 2>/dev/null || true
-        fi
+        # Using a loop to check different depths
+        TARGET="./${DS_NAME}/training"
+        mkdir -p "$TARGET"
         
+        MOVED=0
+        for SRC in "./${DS_NAME}_temp/${DS_NAME}/${DS_NAME}/training" \
+                   "./${DS_NAME}_temp/${DS_NAME}/training" \
+                   "./${DS_NAME}_temp/training"; do
+            if [ -d "$SRC" ]; then
+                mv "$SRC/"* "$TARGET/" 2>/dev/null || true
+                MOVED=1
+                break
+            fi
+        done
+        
+        if [ $MOVED -eq 0 ]; then
+             echo -e "  ${RED}⚠ Could not find training folder inside $ZIP${NC}"
+        else
+             echo -e "  ${GREEN}✓${NC} $DS_NAME extracted"
+        fi
+
         # Cleanup temp dir and zip
         rm -rf "./${DS_NAME}_temp"
         rm -f "$ZIP"
-        echo -e "  ${GREEN}✓${NC} $DS_NAME extracted"
     else
-        echo -e "  ${RED}✗${NC} $ZIP not found"
+        echo -e "  ${RED}✗${NC} $ZIP not found (Download failed?)"
     fi
 done
 
@@ -109,10 +123,6 @@ echo "  Total: ${TOTAL}/144 files"
 if [ "$TOTAL" -eq 144 ]; then
     echo ""
     echo -e "${GREEN}🎉 ALL DATASETS DOWNLOADED SUCCESSFULLY!${NC}"
-    echo ""
-    echo "Next steps:"
-    echo "  ./prepare_data.sh   # Generate training patches"
-    echo "  ./train.sh          # Start training"
 else
     echo ""
     echo -e "${RED}⚠ Some files may be missing. Run ./verify_all.sh for details.${NC}"
