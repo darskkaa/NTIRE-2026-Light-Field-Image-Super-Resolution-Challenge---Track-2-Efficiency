@@ -116,7 +116,11 @@ class TestSetDataLoader(Dataset):
             Sr_SAI_cbcr = np.array(hf.get('Sr_SAI_cbcr'), dtype='single')
             Lr_SAI_y = np.transpose(Lr_SAI_y, (1, 0))
             Hr_SAI_y = np.transpose(Hr_SAI_y, (1, 0))
-            Sr_SAI_cbcr  = np.transpose(Sr_SAI_cbcr,  (2, 1, 0))
+            if len(Sr_SAI_cbcr.shape) == 3:
+                Sr_SAI_cbcr  = np.transpose(Sr_SAI_cbcr,  (2, 1, 0))
+            else:
+                 # Fallback: assume it's already in correct shape or create dummy
+                 pass
 
         Lr_SAI_y = ToTensor()(Lr_SAI_y.copy())
         Hr_SAI_y = ToTensor()(Hr_SAI_y.copy())

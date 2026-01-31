@@ -43,8 +43,12 @@ class TestSetDataLoader(Dataset):
         self.angRes_in = args.angRes_in
         self.angRes_out = args.angRes_out
         if args.task == 'SR':
+            # Try standard structure
             self.dataset_dir = args.path_for_test + 'SR_' + str(args.angRes_in) + 'x' + str(args.angRes_in) + '_' + \
                                str(args.scale_factor) + 'x/'
+            if not os.path.exists(self.dataset_dir + data_name):
+                 # Fallback: maybe it's directly in path_for_test
+                 self.dataset_dir = args.path_for_test
             self.data_list = [data_name]
         elif args.task == 'RE':
             self.dataset_dir = args.path_for_test + 'RE_' + str(args.angRes_in) + 'x' + str(args.angRes_in) + '_' + \

@@ -138,11 +138,21 @@ def main():
     print(f"Model size:           {param_mb:.2f} MB (float32)")
     
     # Check constraint
+    # Check constraint: 1M parameters
     PARAM_LIMIT = 1_000_000
     if total_params < PARAM_LIMIT:
-        print(f"✓ PASS: Parameters ({total_params:,}) < {PARAM_LIMIT:,}")
+        print(f"✓ PASS: Parameters ({total_params:,}) < {PARAM_LIMIT:,} (1M Limit)")
     else:
-        print(f"✗ FAIL: Parameters ({total_params:,}) >= {PARAM_LIMIT:,}")
+        print(f"✗ FAIL: Parameters ({total_params:,}) >= {PARAM_LIMIT:,} (1M Limit)")
+        
+    # Check constraint: 1MB file size (approx 262k float32 params)
+    # The rule "model size (i.e. number of parameters) is restricted to 1 MB" is ambiguous.
+    FILE_SIZE_LIMIT_MB = 1.0
+    if param_mb < FILE_SIZE_LIMIT_MB:
+        print(f"✓ PASS: Model Size ({param_mb:.2f} MB) < {FILE_SIZE_LIMIT_MB} MB")
+    else:
+        print(f"⚠️ WARNING: Model Size ({param_mb:.2f} MB) >= {FILE_SIZE_LIMIT_MB} MB")
+        print("   (If constraint is strictly file size, use fp16 or reduce params to <260k)")
     
     # Create input tensor (SAI format: [B, 1, angRes*H, angRes*W])
     H = W = args.patch_size
