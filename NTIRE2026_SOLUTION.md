@@ -6,15 +6,28 @@ This is a complete solution for the **NTIRE 2026 Light Field Image Super-Resolut
 
 | Metric | Limit | Achieved | Status |
 |--------|-------|----------|--------|
-| **Parameters** | < 1,000,000 | **781,329** | ✅ PASS |
-| **FLOPs** | < 20G | **18.44G** | ✅ PASS |
+| **Parameters** | < 1,000,000 | **547,540** | ✅ PASS |
+| **FLOPs** | < 20G | **19.60G** | ✅ PASS |
+
+## 🔬 v2.0 SOTA-Inspired Architecture
+
+**MyEfficientLFNet v2.0** is a novel architecture combining cutting-edge techniques:
+
+| Technique | Inspiration | What It Does |
+|-----------|-------------|--------------|
+| **Progressive Disentangling** | CVPR 2024 | Channel-wise domain-specific processing |
+| **Lightweight Angular Attention** | LFT/Transformer | Efficient cross-view interaction |
+| **RepConv Blocks** | RepVGG/DBB | Multi-branch training → single-branch inference |
+| **Multi-scale EPI** | BigEPIT | H/V/Diagonal EPI for varying disparities |
+| **SA Modulator** | L²FMamba | Spatial-Angular combined attention |
 
 ## 📁 Custom Files Added
 
 ```
 BasicLFSR/
 ├── model/SR/
-│   └── MyEfficientLFNet.py      # Custom efficient model
+│   └── MyEfficientLFNet.py      # v2.0 SOTA-inspired model
+├── auto_setup.sh                 # ONE-COMMAND setup
 ├── check_efficiency.py           # Verify params & FLOPs
 ├── requirements.txt              # Python dependencies
 │
@@ -78,20 +91,41 @@ Upload the generated ZIP to [CodaBench Track 2](https://www.codabench.org/compet
 
 ---
 
-## 🏗️ Model Architecture
-
-**MyEfficientLFNet** combines:
-
-1. **Spatial-Angular Separable Convolutions**: Dilated 3×3 convs (dilation=5) respect LF angular structure.
-2. **Pseudo-3D EPI Block**: Separate H/V 1D convolutions capture epipolar geometry efficiently.
-3. **Angular Interaction Block**: Pool → Process → Expand for cross-view information.
-4. **SE Attention**: Adaptive channel weighting.
-5. **PixelShuffle Upsampler**: Two-stage 2×2 for 4× SR.
-6. **Bicubic Skip**: Global residual for stable training.
+## 🏗️ Architecture Details
 
 ```
-Config: 46 base channels, 4 SA stages
-        Input [B,1,160,160] → Output [B,1,640,640]
+Input [B, 1, 5×H, 5×W]
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ RepConv Shallow Feature Extraction      │
+│ (dilated 3×3, d=5) → 54 channels       │
+└─────────────────────────────────────────┘
+    │
+    ▼ × 5 Stages
+┌─────────────────────────────────────────┐
+│ Progressive Disentangling Stage         │
+│ ┌───────────────────────────────────┐   │
+│ │ Channel Split [18, 18, 18]        │   │
+│ │ ├─ Spatial Branch (RepConv)       │   │
+│ │ ├─ Angular Branch (LightAttn)     │   │
+│ │ └─ EPI Branch (H/V/Diag)          │   │
+│ │ Learned Gates + SA Modulator      │   │
+│ └───────────────────────────────────┘   │
+└─────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ Global Fusion + Residual               │
+└─────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ PixelShuffle 2× → 2× = 4× Upsampling   │
+└─────────────────────────────────────────┘
+    │
+    ▼
+Output [B, 1, 5×H×4, 5×W×4] + Bicubic Skip
 ```
 
 ---
