@@ -3,6 +3,7 @@
 # RTX 5090 ULTRA-FAST AUTO-SETUP
 # Complete One-Command Setup for High-End GPU
 # WITH GOOGLE DRIVE DATASET DOWNLOAD
+# UPDATED: PyTorch Nightly for Blackwell (sm_120) support
 #============================================================
 
 set -e
@@ -11,7 +12,7 @@ GDRIVE_LINK="https://drive.google.com/file/d/1WUY0WuJsfQWA4ibeLLAcskDJR6c4Es4B/v
 GDRIVE_FILE_ID="1WUY0WuJsfQWA4ibeLLAcskDJR6c4Es4B"
 
 echo "============================================================"
-echo "🚀 RTX 5090 ULTRA-FAST AUTO-SETUP"
+echo "🚀 RTX 5090 ULTRA-FAST AUTO-SETUP (Blackwell Edition)"
 echo "============================================================"
 echo ""
 
@@ -28,16 +29,16 @@ fi
 source venv_lfsr/bin/activate
 echo "✓ Virtual environment activated"
 
-# Step 3: Install PyTorch (CUDA 12.4 for RTX 5090)
-echo "[3/8] Installing PyTorch with CUDA 12.4..."
+# Step 3: Install PyTorch NIGHTLY (Required for RTX 5090 Blackwell sm_120)
+echo "[3/8] Installing PyTorch Nightly with CUDA 12.6 (sm_120 support)..."
 pip install --quiet --upgrade pip
-pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cu124
-echo "✓ PyTorch installed"
+pip install --quiet --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu126
+echo "✓ PyTorch Nightly installed (Blackwell sm_120 supported)"
 
-# Step 4: Install dependencies
+# Step 4: Install dependencies (including scikit-image)
 echo "[4/8] Installing project dependencies..."
 pip install --quiet -r requirements.txt
-pip install --quiet fvcore einops h5py scipy xlwt gdown
+pip install --quiet fvcore einops h5py scipy xlwt gdown scikit-image imageio
 echo "✓ All dependencies installed"
 
 # Step 5: Verify GPU
@@ -49,6 +50,7 @@ print(f'   CUDA Available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
     print(f'   GPU: {torch.cuda.get_device_name(0)}')
     print(f'   VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
+    print(f'   Compute Capability: {torch.cuda.get_device_capability(0)}')
 "
 
 # Step 6: Download Dataset from Google Drive
@@ -57,7 +59,9 @@ echo "      File ID: ${GDRIVE_FILE_ID}"
 cd datasets 2>/dev/null || mkdir -p datasets && cd datasets
 
 if [ ! -d "EPFL" ]; then
-    gdown --fuzzy "${GDRIVE_LINK}" -O dataset.zip
+    if [ ! -f "dataset.zip" ]; then
+        gdown --fuzzy "${GDRIVE_LINK}" -O dataset.zip
+    fi
     echo "      Extracting..."
     unzip -q dataset.zip
     rm -f dataset.zip
