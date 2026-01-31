@@ -12,9 +12,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--angRes", type=int, default=5, help="angular resolution")
     parser.add_argument("--scale_factor", type=int, default=4, help="4, 2")
-    parser.add_argument('--data_for', type=str, default='inference', help='')
-    parser.add_argument('--src_data_path', type=str, default='./datasets/', help='')
-    parser.add_argument('--save_data_path', type=str, default='./', help='')
+    parser.add_argument('--data_for', type=str, default='inference', help='training or inference')
+    parser.add_argument('--src_data_path', type=str, default='./datasets/', help='path to source datasets')
+    parser.add_argument('--save_data_path', type=str, default='./', help='path to save converted data')
 
     return parser.parse_args()
 
