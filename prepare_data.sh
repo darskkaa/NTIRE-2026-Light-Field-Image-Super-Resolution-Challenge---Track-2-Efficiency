@@ -35,12 +35,10 @@ done
 
 if [ $MISSING -eq 1 ]; then
     echo ""
-    echo "ERROR: Some datasets are missing!"
-    echo "Please download from:"
-    echo "https://stuxidianeducn-my.sharepoint.com/personal/zyliang_stu_xidian_edu_cn/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fzyliang%5Fstu%5Fxidian%5Fedu%5Fcn%2FDocuments%2Fdatasets&ga=1"
+    echo "WARNING: Some datasets are missing!"
+    echo "Training will proceed with available datasets only."
+    echo "This is fine for testing, but download all for submission."
     echo ""
-    echo "Extract each dataset folder contents to datasets/<name>/training/"
-    exit 1
 fi
 
 echo ""
