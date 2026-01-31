@@ -106,16 +106,16 @@ def cal_metrics(args, label, out,):
     for b in range(B):
         for u in range(U):
             for v in range(V):
-                PSNR[b, u, v] = metrics.peak_signal_noise_ratio(label_y[b, u, :, v, :].numpy(), out_y[b, u, :, v, :].numpy())
+                PSNR[b, u, v] = metrics.peak_signal_noise_ratio(label_y[b, u, :, v, :].numpy(), out_y[b, u, :, v, :].numpy(), data_range=1.0)
                 if args.task == 'RE':
                     SSIM[b, u, v] = metrics.structural_similarity(label_y[b, u, :, v, :].numpy(),
                                                                   out_y[b, u, :, v, :].numpy(),
                                                                   gaussian_weights=True,
-                                                                  sigma=1.5, use_sample_covariance=False)
+                                                                  sigma=1.5, use_sample_covariance=False, data_range=1.0)
                 else:
                     SSIM[b, u, v] = metrics.structural_similarity(label_y[b, u, :, v, :].numpy(),
                                                                   out_y[b, u, :, v, :].numpy(),
-                                                                  gaussian_weights=True, )
+                                                                  gaussian_weights=True, data_range=1.0)
                 pass
 
     if args.task=='RE':
