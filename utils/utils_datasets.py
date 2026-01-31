@@ -116,15 +116,18 @@ class TestSetDataLoader(Dataset):
             Sr_SAI_cbcr = np.array(hf.get('Sr_SAI_cbcr'), dtype='single')
             Lr_SAI_y = np.transpose(Lr_SAI_y, (1, 0))
             Hr_SAI_y = np.transpose(Hr_SAI_y, (1, 0))
-            if len(Sr_SAI_cbcr.shape) == 3:
-                Sr_SAI_cbcr  = np.transpose(Sr_SAI_cbcr,  (2, 1, 0))
-            else:
-                 # Fallback: assume it's already in correct shape or create dummy
-                 pass
+            if Sr_SAI_cbcr.ndim == 3:
+                Sr_SAI_cbcr = np.transpose(Sr_SAI_cbcr, (2, 1, 0))
+            elif Sr_SAI_cbcr.ndim == 0 or Sr_SAI_cbcr.size == 0:
+                # Create dummy cbcr with 2 channels matching Hr_SAI_y dimensions
+                Sr_SAI_cbcr = np.zeros((Hr_SAI_y.shape[0], Hr_SAI_y.shape[1], 2), dtype=np.float32)
+            elif Sr_SAI_cbcr.ndim == 2:
+                # 2D array - expand to 3D with single channel
+                Sr_SAI_cbcr = np.expand_dims(Sr_SAI_cbcr, axis=-1)
 
         Lr_SAI_y = ToTensor()(Lr_SAI_y.copy())
         Hr_SAI_y = ToTensor()(Hr_SAI_y.copy())
-        Sr_SAI_cbcr = ToTensor()(Sr_SAI_cbcr.copy())
+        Sr_SAI_cbcr = ToTensor()(Sr_SAI_cbcr.copy().astype(np.float32))
 
         Lr_angRes_in = self.angRes_in
         Lr_angRes_out = self.angRes_out
