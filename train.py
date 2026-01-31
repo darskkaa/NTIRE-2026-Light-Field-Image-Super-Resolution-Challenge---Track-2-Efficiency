@@ -115,7 +115,8 @@ def main(args):
     )
     
     # AMP Scaler for mixed precision training
-    scaler = torch.cuda.amp.GradScaler()
+    # AMP Scaler for mixed precision training
+    scaler = torch.amp.GradScaler('cuda')
 
 
 
@@ -202,9 +203,14 @@ def train(train_loader, device, net, criterion, optimizer, scaler):
         optimizer.zero_grad()
         
         # Mixed Precision Training
-        with torch.cuda.amp.autocast():
+        # Mixed Precision Training
+        with torch.amp.autocast('cuda'):
             out = net(data, data_info)
             loss = criterion(out, label, data_info)
+
+        if torch.isnan(loss):
+            print(f"Error: Loss is NaN at epoch {idx_iter}")
+            continue
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)  # Unscale before clipping

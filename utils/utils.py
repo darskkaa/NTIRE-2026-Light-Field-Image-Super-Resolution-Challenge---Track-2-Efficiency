@@ -124,8 +124,12 @@ def cal_metrics(args, label, out,):
                 PSNR[:, u, v] = 0
                 SSIM[:, u, v] = 0
 
-    PSNR_mean = PSNR.sum() / np.sum(PSNR > 0)
-    SSIM_mean = SSIM.sum() / np.sum(SSIM > 0)
+    
+    valid_psnr = np.sum(PSNR > 0)
+    PSNR_mean = PSNR.sum() / valid_psnr if valid_psnr > 0 else 0.0
+    
+    valid_ssim = np.sum(SSIM > 0)
+    SSIM_mean = SSIM.sum() / valid_ssim if valid_ssim > 0 else 0.0
 
     return PSNR_mean, SSIM_mean
 
