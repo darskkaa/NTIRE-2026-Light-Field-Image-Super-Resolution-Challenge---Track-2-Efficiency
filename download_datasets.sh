@@ -41,8 +41,8 @@ if ! command -v gdown &> /dev/null; then
     pip install gdown -q
 fi
 
-# Google Drive folder ID
-GDRIVE_FOLDER="1kxAGVzMTg4R-qncuj8x2qWqBmlQdd3zC"
+# Google Drive folder ID (NEW LINK)
+GDRIVE_FOLDER="1j3F9iD5SqAl14LEAaOdN8wTnHrYuKwGd"
 
 # Create datasets directory
 mkdir -p datasets
