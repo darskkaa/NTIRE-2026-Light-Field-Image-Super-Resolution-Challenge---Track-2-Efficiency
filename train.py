@@ -207,6 +207,8 @@ def train(train_loader, device, net, criterion, optimizer, scaler):
             loss = criterion(out, label, data_info)
 
         scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)  # Unscale before clipping
+        torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)  # Gradient clipping
         scaler.step(optimizer)
         scaler.update()
         

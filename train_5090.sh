@@ -46,8 +46,8 @@ python check_efficiency.py --model_name MyEfficientLFNet
 # Start training
 echo ""
 echo "[2/2] Starting training..."
-echo "      Batch Size: 32 | Workers: 16 | Epochs: 100"
-echo "      Estimated Time: ~2 hours"
+echo "      Batch Size: 32 | Workers: 16 | Epochs: 50"
+echo "      Estimated Time: ~6 hours"
 echo ""
 
 python train.py \
@@ -56,7 +56,7 @@ python train.py \
     --scale_factor 4 \
     --batch_size 32 \
     --lr 0.0005 \
-    --epoch 100 \
+    --epoch 50 \
     --num_workers 16 \
     --device cuda:0
 
