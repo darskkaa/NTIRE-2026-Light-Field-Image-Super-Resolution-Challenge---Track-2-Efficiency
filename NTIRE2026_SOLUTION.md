@@ -31,34 +31,31 @@ BasicLFSR/
 
 ## 🚀 Quick Start (Linux VM with GPU)
 
-### 1. Clone and Setup
+### ONE-COMMAND SETUP
 ```bash
-git clone https://github.com/ZhengyuLiang24/BasicLFSR.git
-cd BasicLFSR
-
-# Make scripts executable
+git clone https://github.com/darskkaa/NTIRE-2026-Light-Field-Image-Super-Resolution-Challenge---Track-2-Efficiency.git
+cd NTIRE-2026-Light-Field-Image-Super-Resolution-Challenge---Track-2-Efficiency
 chmod +x *.sh
-
-# Run setup
-./setup_environment.sh
+./auto_setup.sh
 ```
 
-### 2. Download Datasets
-Open in browser and download all 5 folders:
-```
-https://stuxidianeducn-my.sharepoint.com/personal/zyliang_stu_xidian_edu_cn/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fzyliang%5Fstu%5Fxidian%5Fedu%5Fcn%2FDocuments%2Fdatasets
+This single script will:
+1. ✅ Install system dependencies
+2. ✅ Create Python virtual environment
+3. ✅ Install PyTorch with CUDA
+4. ✅ Attempt to download datasets automatically
+5. ✅ Generate training patches
+6. ✅ Verify model efficiency
+
+> **Note**: If automatic dataset download fails (OneDrive requires auth), the script will provide manual download instructions. After downloading, run `./download_complete.sh`
+
+### After Setup - Train!
+```bash
+source venv_lfsr/bin/activate
+./train.sh
 ```
 
-Extract to:
-```
-datasets/EPFL/training/          → .mat files
-datasets/HCI_new/training/       → .mat files
-datasets/HCI_old/training/       → .mat files
-datasets/INRIA_Lytro/training/   → .mat files
-datasets/Stanford_Gantry/training/ → .mat files
-```
-
-### 3. Prepare Data
+### Dataset Download (if needed manually)
 ```bash
 source venv_lfsr/bin/activate
 ./prepare_data.sh
