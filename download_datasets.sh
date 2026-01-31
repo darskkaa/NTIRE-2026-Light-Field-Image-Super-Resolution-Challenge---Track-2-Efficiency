@@ -58,6 +58,10 @@ gdown --folder "https://drive.google.com/drive/folders/${GDRIVE_FOLDER}" --remai
 echo ""
 echo -e "${YELLOW}[2/3] Extracting ZIP files...${NC}"
 
+# Fix for gdown creating a subfolder (e.g. training_nicre/)
+# Move all ZIPs to current directory
+mv */*.zip . 2>/dev/null || true
+
 # Extract each dataset
 for ZIP in EPFL.zip HCI_new.zip HCI_old.zip INRIA_Lytro.zip Stanford_Gantry.zip; do
     if [ -f "$ZIP" ]; then
