@@ -25,7 +25,8 @@ def main(args):
     train_Dataset = TrainSetDataLoader(args)
     logger.log_string("The number of training data is: %d" % len(train_Dataset))
     train_loader = torch.utils.data.DataLoader(dataset=train_Dataset, num_workers=args.num_workers,
-                                               batch_size=args.batch_size, shuffle=True,)
+                                               batch_size=args.batch_size, shuffle=True,
+                                               pin_memory=True, prefetch_factor=4 if args.num_workers > 0 else None)
 
     ''' DATA Validation LOADING '''
     logger.log_string('\nLoad Validation Dataset ...')
@@ -84,15 +85,38 @@ def main(args):
     criterion = MODEL.get_loss(args).to(device)
 
 
-    ''' Optimizer '''
-    optimizer = torch.optim.Adam(
+    ''' Optimizer - AdamW (better weight decay) '''
+    optimizer = torch.optim.AdamW(
         [paras for paras in net.parameters() if paras.requires_grad == True],
         lr=args.lr,
         betas=(0.9, 0.999),
         eps=1e-08,
-        weight_decay=args.decay_rate
+        weight_decay=1e-4  # AdamW handles weight decay better
     )
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.n_steps, gamma=args.gamma)
+    
+    ''' Learning Rate Scheduler - Cosine Annealing with Warmup (SOTA) '''
+    # Calculate total steps for cosine annealing
+    total_epochs = args.epoch
+    warmup_epochs = min(5, total_epochs // 10)  # 5 epochs or 10% warmup
+    
+    # Main scheduler: Cosine Annealing after warmup
+    main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_epochs - warmup_epochs, eta_min=1e-6
+    )
+    
+    # Warmup scheduler: Linear warmup
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs
+    )
+    
+    # Combine: Warmup then Cosine
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs]
+    )
+    
+    # AMP Scaler for mixed precision training
+    scaler = torch.cuda.amp.GradScaler()
+
 
 
     ''' TRAINING & TEST '''
@@ -101,7 +125,7 @@ def main(args):
         logger.log_string('\nEpoch %d /%s:' % (idx_epoch + 1, args.epoch))
 
         ''' Training '''
-        loss_epoch_train, psnr_epoch_train, ssim_epoch_train = train(train_loader, device, net, criterion, optimizer)
+        loss_epoch_train, psnr_epoch_train, ssim_epoch_train = train(train_loader, device, net, criterion, optimizer, scaler)
         logger.log_string('The %dth Train, loss is: %.5f, psnr is %.5f, ssim is %.5f' %
                           (idx_epoch + 1, loss_epoch_train, psnr_epoch_train, ssim_epoch_train))
 
@@ -162,7 +186,7 @@ def main(args):
     pass
 
 
-def train(train_loader, device, net, criterion, optimizer):
+def train(train_loader, device, net, criterion, optimizer, scaler):
     ''' training one epoch '''
     psnr_iter_train = []
     loss_iter_train = []
@@ -174,16 +198,22 @@ def train(train_loader, device, net, criterion, optimizer):
 
         data = data.to(device)      # low resolution
         label = label.to(device)    # high resolution
-        out = net(data, data_info)
-        loss = criterion(out, label, data_info)
-
+        
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        torch.cuda.empty_cache()
+        
+        # Mixed Precision Training
+        with torch.cuda.amp.autocast():
+            out = net(data, data_info)
+            loss = criterion(out, label, data_info)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        
+        # torch.cuda.empty_cache() # Removed for speed
 
         loss_iter_train.append(loss.data.cpu())
-        psnr, ssim = cal_metrics(args, label, out)
+        psnr, ssim = cal_metrics(args, label, out.float()) # Convert to float for metric calc
         psnr_iter_train.append(psnr)
         ssim_iter_train.append(ssim)
         pass
