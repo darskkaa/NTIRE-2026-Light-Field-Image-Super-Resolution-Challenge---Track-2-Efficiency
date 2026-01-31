@@ -53,7 +53,7 @@ echo "Generating training patches (5x5 angular, 4x SR)..."
 echo "This may take 10-30 minutes depending on your storage speed."
 echo "=============================================="
 
-python Generate_Data_for_Training.py \
+python generate_data_fix.py \
     --angRes 5 \
     --scale_factor 4 \
     --data_for training \
