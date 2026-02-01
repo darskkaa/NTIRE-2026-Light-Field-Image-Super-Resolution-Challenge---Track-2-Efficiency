@@ -60,10 +60,11 @@ def main(args):
                 LF = LF[(U-angRes)//2:(U+angRes)//2, (V-angRes)//2:(V+angRes)//2, 0:H, 0:W, 0:3]
                 LF = LF.astype('double')
                 
-                # Normalize to 0-255 if data is in 0-1 range (common for .mat files)
-                if LF.max() <= 1.0:
-                    LF = LF * 255.0
-                    print(f"  [INFO] Normalized {file} from 0-1 to 0-255 range")
+                # Reverted manual normalization. 
+                # rgb2ycbcr handles 0-1 input correctly (producing 0-1 output).
+                # Forcing 0-255 here causes the model input to be 255x too large.
+                # if LF.max() <= 1.0:
+                #    LF = LF * 255.0
                 
                 (U, V, H, W, _) = LF.shape
 
