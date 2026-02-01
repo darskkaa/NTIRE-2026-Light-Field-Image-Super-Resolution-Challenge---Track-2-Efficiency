@@ -44,7 +44,7 @@ fi
 
 # Create ZIP
 cd "$SUBMISSION_DIR"
-ZIP_NAME="${MODEL_NAME}_submission.zip"
+ZIP_NAME="submission.zip"
 zip -r "../$ZIP_NAME" Real/ Synth/
 cd ..
 
