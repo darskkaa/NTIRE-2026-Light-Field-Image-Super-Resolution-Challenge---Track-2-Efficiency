@@ -14,6 +14,15 @@ def validate_submission(zip_path):
     errors = []
     warnings = []
     
+    if os.path.isdir(zip_path):
+        print(f"❌ ERROR: '{zip_path}' is a directory!")
+        print(f"   Please point to the ZIP file (e.g., ./submission.zip) not the folder.")
+        # Check if the zip is likely just outside or inside
+        likely_zip = os.path.join(os.path.dirname(zip_path), "submission.zip")
+        if os.path.exists(likely_zip):
+            print(f"   💡 Did you mean: '{likely_zip}'?")
+        return False
+
     if not os.path.exists(zip_path):
         print(f"❌ ERROR: {zip_path} not found!")
         return False
