@@ -6,7 +6,7 @@ from pathlib import Path
 import scipy.io as scio
 import sys
 from utils.utils import rgb2ycbcr
-
+import numpy as np
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -40,6 +40,10 @@ def main(args):
         sub_save_dir.mkdir(exist_ok=True)
 
         src_sub_dataset = args.src_data_path + name_dataset + '/' + args.data_for + '/'
+        if not os.path.exists(src_sub_dataset):
+            print(f"Skipping {name_dataset}: {src_sub_dataset} not found")
+            continue
+
         for root, dirs, files in os.walk(src_sub_dataset):
             for file in files:
                 idx_scene_save = 0
@@ -78,7 +82,6 @@ def main(args):
                         tmp_Lr_y = tmp_Lr_ycbcr[:, :, 0]
                         Hr_SAI_y[u * H * scale_factor: (u + 1) * H * scale_factor,
                         v * W * scale_factor: (v + 1) * W * scale_factor] = imresize(tmp_Lr_y, scalar_scale=scale_factor)
-
                         pass
                     pass
 
@@ -99,5 +102,4 @@ def main(args):
 
 if __name__ == '__main__':
     args = parse_args()
-
     main(args)
