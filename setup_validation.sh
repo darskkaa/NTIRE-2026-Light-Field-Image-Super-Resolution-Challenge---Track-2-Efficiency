@@ -52,7 +52,7 @@ fi
 
 # 2. Prepare Data (Generate H5) for Inference Only
 echo "Running data preparation (Inference only)..."
-python -B Generate_Data_for_inference.py \
+python -B Generate_Validation_Data.py \
     --angRes 5 \
     --scale_factor 4 \
     --data_for inference \
