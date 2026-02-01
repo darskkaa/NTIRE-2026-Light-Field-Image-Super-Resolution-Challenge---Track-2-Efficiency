@@ -119,4 +119,13 @@ if __name__ == "__main__":
     else:
         zip_path = "./submission.zip"
     
+    # Help user find the file if they haven't created it yet
+    if not os.path.exists(zip_path):
+        legacy_path = "./MyEfficientLFNet_submission.zip"
+        if os.path.exists(legacy_path):
+            print(f"⚠️  NOTE: Found '{legacy_path}' instead of '{zip_path}'.")
+            print("   The script will check this file, but you should rename it or re-run create_submission.sh")
+            print("   to match the new naming convention.\n")
+            zip_path = legacy_path
+    
     validate_submission(zip_path)
