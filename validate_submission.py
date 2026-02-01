@@ -14,14 +14,8 @@ def validate_submission(zip_path):
     errors = []
     warnings = []
     
-    if os.path.isdir(zip_path):
-        print(f"❌ ERROR: '{zip_path}' is a directory!")
-        print(f"   Please point to the ZIP file (e.g., ./submission.zip) not the folder.")
-        # Check if the zip is likely just outside or inside
-        likely_zip = os.path.join(os.path.dirname(zip_path), "submission.zip")
-        if os.path.exists(likely_zip):
-            print(f"   💡 Did you mean: '{likely_zip}'?")
-        return False
+    # Validating File or Directory
+    pass
 
     if not os.path.exists(zip_path):
         print(f"❌ ERROR: {zip_path} not found!")
@@ -30,8 +24,42 @@ def validate_submission(zip_path):
     print(f"📦 Validating: {zip_path}")
     print("=" * 50)
     
-    with zipfile.ZipFile(zip_path, 'r') as zf:
-        file_list = zf.namelist()
+    print(f"📦 Validating: {zip_path}")
+    print("=" * 50)
+
+    # Abstraction to handle both ZipFile and Directory
+    class FileProvider:
+        def __init__(self, root):
+            self.root = root
+            self.is_zip = os.path.isfile(root)
+            self.zf = None
+            if self.is_zip:
+                self.zf = zipfile.ZipFile(root, 'r')
+                self.files = self.zf.namelist()
+            else:
+                self.files = []
+                for r, d, f in os.walk(root):
+                    for file in f:
+                        rel_path = os.path.relpath(os.path.join(r, file), root)
+                        self.files.append(rel_path.replace('\\', '/'))
+
+        def read(self, filename):
+            if self.is_zip:
+                return self.zf.read(filename)
+            else:
+                with open(os.path.join(self.root, filename), 'rb') as f:
+                    return f.read()
+        
+        def namelist(self):
+            return self.files
+
+        def close(self):
+            if self.zf:
+                self.zf.close()
+
+    try:
+        provider = FileProvider(zip_path)
+        file_list = provider.namelist()
         
         # Check for Real/ and Synth/ folders
         has_real = any(f.startswith('Real/') for f in file_list)
@@ -101,7 +129,7 @@ def validate_submission(zip_path):
             if f.endswith('.bmp') and (f.startswith('Real/') or f.startswith('Synth/')):
                 bmp_count += 1
                 try:
-                    data = zf.read(f)
+                    data = provider.read(f)
                     
                     # 1. Size check
                     if len(data) < 1000:
@@ -156,7 +184,7 @@ def validate_submission(zip_path):
         
         for f in sample_subset:
             try:
-                data = zf.read(f)
+                data = provider.read(f)
                 # Skip header (54 bytes usually)
                 pixel_data = data[54:]
                 if len(pixel_data) > 0:
