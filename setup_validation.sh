@@ -15,12 +15,12 @@ if [ ! -f "validation_set.zip" ]; then
     FILE_ID="1ik0yzmuuIG2SbPyw-PtukmRztZL24cMk"
     
     # Try using gdown (more reliable)
-    if python -c "import gdown" &> /dev/null; then
-        python -m gdown "$FILE_ID" -O validation_set.zip
+    if python -B -c "import gdown" &> /dev/null; then
+        python -B -m gdown "$FILE_ID" -O validation_set.zip
     else
         echo "Installing gdown..."
         pip install gdown
-        python -m gdown "$FILE_ID" -O validation_set.zip
+        python -B -m gdown "$FILE_ID" -O validation_set.zip
     fi
 fi
 
@@ -52,7 +52,7 @@ fi
 
 # 2. Prepare Data (Generate H5) for Inference Only
 echo "Running data preparation (Inference only)..."
-python Generate_Data_for_inference.py \
+python -B Generate_Data_for_inference.py \
     --angRes 5 \
     --scale_factor 4 \
     --data_for inference \
