@@ -76,7 +76,7 @@ def main(args):
             save_dir = result_dir.joinpath(test_name)
             save_dir.mkdir(exist_ok=True)
 
-            psnr_iter_test, ssim_iter_test, LF_name = test(test_loader, device, net, save_dir)
+            psnr_iter_test, ssim_iter_test, LF_name = test(test_loader, device, net, args, save_dir)
             excel_file.write_sheet(test_name, LF_name, psnr_iter_test, ssim_iter_test)
 
             psnr_epoch_test = float(np.array(psnr_iter_test).mean())

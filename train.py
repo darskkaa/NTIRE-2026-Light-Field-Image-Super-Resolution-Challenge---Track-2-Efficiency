@@ -160,7 +160,7 @@ def main(args):
                     save_dir = epoch_dir.joinpath(test_name)
                     save_dir.mkdir(exist_ok=True)
 
-                    psnr_iter_test, ssim_iter_test, LF_name = test(test_loader, device, net, save_dir)
+                    psnr_iter_test, ssim_iter_test, LF_name = test(test_loader, device, net, args, save_dir)
                     excel_file.write_sheet(test_name, LF_name, psnr_iter_test, ssim_iter_test)
 
 
@@ -234,7 +234,7 @@ def train(train_loader, device, net, criterion, optimizer, scaler):
 
 
 
-def test(test_loader, device, net, save_dir=None):
+def test(test_loader, device, net, args, save_dir=None):
     LF_iter_test = []
     psnr_iter_test = []
     ssim_iter_test = []
