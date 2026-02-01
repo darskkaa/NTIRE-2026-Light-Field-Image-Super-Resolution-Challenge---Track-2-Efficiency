@@ -280,24 +280,15 @@ def test(test_loader, device, net, args, save_dir=None):
         if save_dir is not None:
             save_dir_ = save_dir.joinpath(LF_name[0])
             save_dir_.mkdir(exist_ok=True)
-            views_dir = save_dir_.joinpath('views')
-            views_dir.mkdir(exist_ok=True)
             Sr_SAI_ycbcr = torch.cat((Sr_SAI_y, Sr_SAI_cbcr), dim=1)
             Sr_SAI_rgb = (ycbcr2rgb(Sr_SAI_ycbcr.squeeze().permute(1, 2, 0).numpy()).clip(0,1)*255).astype('uint8')
             Sr_4D_rgb = rearrange(Sr_SAI_rgb, '(a1 h) (a2 w) c -> a1 a2 h w c', a1=args.angRes_out, a2=args.angRes_out)
 
-            # save the SAI
-            # path = str(save_dir_) + '/' + LF_name[0] + '_SAI.bmp'
-            # imageio.imwrite(path, Sr_SAI_rgb)
-            # save the center view
-            img = Sr_4D_rgb[args.angRes_out // 2, args.angRes_out // 2, :, :, :]
-            path = str(save_dir_) + '/' + LF_name[0] + '_' + 'CenterView.bmp'
-            imageio.imwrite(path, img)
-            # save all views
+            # Save all views with CodaBench-compliant naming: View_i_j.bmp
             for i in range(args.angRes_out):
                 for j in range(args.angRes_out):
                     img = Sr_4D_rgb[i, j, :, :, :]
-                    path = str(views_dir) + '/' + LF_name[0] + '_' + str(i) + '_' + str(j) + '.bmp'
+                    path = str(save_dir_) + '/View_' + str(i) + '_' + str(j) + '.bmp'
                     imageio.imwrite(path, img)
                     pass
                 pass
