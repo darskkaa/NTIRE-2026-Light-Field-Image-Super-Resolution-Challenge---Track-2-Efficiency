@@ -139,7 +139,47 @@ def validate_submission(zip_path):
                 except Exception as e:
                     errors.append(f"Could not read {f}: {str(e)}")
 
+                except Exception as e:
+                    errors.append(f"Could not read {f}: {str(e)}")
+
         print(f"   ✓ Scanned {bmp_count} BMP files.")
+        
+        # 4. Content Analysis (Sample Check)
+        print("\n🔍 Content Analysis (Detecting Range Issues):")
+        # We sample ~50 images to check for 'black image' syndrome (mean < 5)
+        import random
+        sample_files = [f for f in file_list if f.endswith('.bmp')]
+        sample_subset = random.sample(sample_files, min(len(sample_files), 50))
+        
+        low_range_count = 0
+        mean_vals = []
+        
+        for f in sample_subset:
+            try:
+                data = zf.read(f)
+                # Skip header (54 bytes usually)
+                pixel_data = data[54:]
+                if len(pixel_data) > 0:
+                    # Quick mean calculation (approximate for efficiency)
+                    mean_val = sum(pixel_data) / len(pixel_data)
+                    mean_vals.append(mean_val)
+                    if mean_val < 5.0: # Threshold for "extremely dark"
+                        low_range_count += 1
+            except:
+                pass
+
+        if mean_vals:
+            avg_mean = sum(mean_vals) / len(mean_vals)
+            print(f"   • Average Pixel Intensity: {avg_mean:.2f} (Expected > 20)")
+            
+            if avg_mean < 5.0 or low_range_count > len(sample_subset) // 2:
+                print(f"   ⚠️  WARNING: DETECTED DARK / BLACK IMAGES!")
+                print(f"      Mean intensity is {avg_mean:.2f}. Valid natural images are usually > 40.")
+                print(f"      Possible Cause: 0-1 range vs 0-255 range mismatch.")
+                print(f"      Recommendation: Re-check Generate_Validation_Data.py normalization.")
+                warnings.append("Images appear suspiciously dark/black (Possible Range Mismatch)")
+            else:
+                 print("   ✓ Image intensity looks normal (Not black).")
         
         if corrupt_files:
             print(f"\n❌ FOUND {len(corrupt_files)} CORRUPT FILES:")
