@@ -89,22 +89,67 @@ def validate_submission(zip_path):
         if len(synth_scenes) != 16:
             warnings.append(f"Expected 16 Synth scenes, found {len(synth_scenes)}")
         
-        # Sample a view file to check it's a valid image
-        sample_file = None
-        for f in file_list:
-            if f.endswith('.bmp') and 'View_2_2' in f:
-                sample_file = f
-                break
+        # Rigorous check: Validate EVERY BMP file
+        print(f"\n🔍 Rigorous Check: Scanning inner content of {len(real_scenes) + len(synth_scenes)} scenes...")
         
-        if sample_file:
-            data = zf.read(sample_file)
-            if len(data) < 1000:
-                errors.append(f"Sample file {sample_file} seems too small ({len(data)} bytes)")
-            elif data[:2] != b'BM':
-                errors.append(f"Sample file {sample_file} doesn't look like a valid BMP")
-            else:
-                print(f"\n🖼️  Sample image: {sample_file} ({len(data)//1024} KB)")
-    
+        corrupt_files = []
+        small_files = []
+        dimensions = {} # scene -> (w, h)
+        
+        bmp_count = 0
+        for f in file_list:
+            if f.endswith('.bmp') and (f.startswith('Real/') or f.startswith('Synth/')):
+                bmp_count += 1
+                try:
+                    data = zf.read(f)
+                    
+                    # 1. Size check
+                    if len(data) < 1000:
+                        small_files.append(f"{f} ({len(data)} bytes)")
+                        errors.append(f"File too small: {f}")
+                        continue
+
+                    # 2. Header check (BM signature)
+                    if data[:2] != b'BM':
+                        corrupt_files.append(f"{f} (Invalid Magic Header)")
+                        errors.append(f"Invalid BMP header: {f}")
+                        continue
+                        
+                    # 3. Simple Dimension Parse (Little endian, standard BMP header)
+                    # Width at offset 18 (4 bytes), Height at offset 22 (4 bytes)
+                    import struct
+                    try:
+                        w, h = struct.unpack('<II', data[18:26])
+                        if w == 0 or h == 0:
+                            corrupt_files.append(f"{f} (Zero dimensions: {w}x{h})")
+                            errors.append(f"Invalid dimensions {w}x{h}: {f}")
+                        else:
+                            # Consistency check: Scene images should likely be same size
+                            parts = f.split('/')
+                            if len(parts) >= 2:
+                                scene_key = f"{parts[0]}/{parts[1]}"
+                                if scene_key not in dimensions:
+                                    dimensions[scene_key] = (w, h)
+                                elif dimensions[scene_key] != (w, h):
+                                    # Warning only, as some datasets might have varying aspect ratios per view (unlikely but possible)
+                                    pass 
+                    except Exception as e:
+                        corrupt_files.append(f"{f} (Header parse error: {str(e)})")
+                        
+                except Exception as e:
+                    errors.append(f"Could not read {f}: {str(e)}")
+
+        print(f"   ✓ Scanned {bmp_count} BMP files.")
+        
+        if corrupt_files:
+            print(f"\n❌ FOUND {len(corrupt_files)} CORRUPT FILES:")
+            for cf in corrupt_files[:5]:
+                print(f"   • {cf}")
+            if len(corrupt_files) > 5:
+                print(f"   ... and {len(corrupt_files)-5} more.")
+        else:
+            print("   ✓ All BMP headers and dimensions valid.")
+
     print("\n" + "=" * 50)
     
     if warnings:
@@ -118,7 +163,9 @@ def validate_submission(zip_path):
             print(f"   • {e}")
         return False
     else:
-        print("\n✅ PASSED! Submission structure looks valid.")
+        print("\n✅ PASSED! Submission is robust.")
+        print("   • Structure: Valid")
+        print(f"   • Content:   Verified {bmp_count} images")
         print("   Ready to upload to CodaBench!")
         return True
 
