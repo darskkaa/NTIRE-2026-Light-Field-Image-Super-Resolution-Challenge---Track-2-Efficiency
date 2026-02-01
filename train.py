@@ -288,6 +288,9 @@ def test(test_loader, device, net, args, save_dir=None):
             for i in range(args.angRes_out):
                 for j in range(args.angRes_out):
                     img = Sr_4D_rgb[i, j, :, :, :]
+                    # CRITICAL: Flip RGB to BGR for CodaBench compatibility
+                    # CodaBench uses cv2.imread which expects BGR format
+                    img = img[:, :, ::-1]
                     path = str(save_dir_) + '/View_' + str(i) + '_' + str(j) + '.bmp'
                     imageio.imwrite(path, img)
                     pass
