@@ -24,9 +24,6 @@ def validate_submission(zip_path):
     print(f"📦 Validating: {zip_path}")
     print("=" * 50)
     
-    print(f"📦 Validating: {zip_path}")
-    print("=" * 50)
-
     # Abstraction to handle both ZipFile and Directory
     class FileProvider:
         def __init__(self, root):
@@ -167,9 +164,6 @@ def validate_submission(zip_path):
                 except Exception as e:
                     errors.append(f"Could not read {f}: {str(e)}")
 
-                except Exception as e:
-                    errors.append(f"Could not read {f}: {str(e)}")
-
         print(f"   ✓ Scanned {bmp_count} BMP files.")
         
         # 4. Content Analysis (Sample Check)
@@ -217,6 +211,15 @@ def validate_submission(zip_path):
                 print(f"   ... and {len(corrupt_files)-5} more.")
         else:
             print("   ✓ All BMP headers and dimensions valid.")
+
+    except Exception as e:
+        print(f"\n❌ FATAL CHECK ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        if 'provider' in locals():
+            provider.close()
 
     print("\n" + "=" * 50)
     
