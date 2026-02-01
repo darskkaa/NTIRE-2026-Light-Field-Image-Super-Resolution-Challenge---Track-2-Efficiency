@@ -25,16 +25,27 @@ if [ ! -f "validation_set.zip" ]; then
 fi
 
 # 1. Unzip the validation set
+if [ -f "validation_set.zip" ]; then
+    echo "Unzipping validation set..."
     unzip -o validation_set.zip -d datasets/
     
-    # Ensure folder structure is correct (sometimes zips have different internal structures)
-    # Goal: datasets/NTIRE_Val_Real/inference/*.png and datasets/NTIRE_Val_Synth/inference/*.png
+    # Fix Folder Structure
+    # The zip usually extracts to 'datasets/NTIRE_Validation/' containing 'NTIRE_Val_Real' etc.
+    # We want 'datasets/NTIRE_Val_Real' directly.
     
-    # Simple fixup if they unzipped into a subfolder
-    if [ -d "datasets/validation_set/NTIRE_Val_Real" ]; then
-        mv datasets/validation_set/* datasets/
-        rmdir datasets/validation_set
+    if [ -d "datasets/NTIRE_Validation" ]; then
+        echo "Moving files from datasets/NTIRE_Validation/ to datasets/..."
+        rsync -a datasets/NTIRE_Validation/ datasets/
+        rm -rf datasets/NTIRE_Validation
     fi
+    
+    # Also check the 'validation_set' case just in case
+    if [ -d "datasets/validation_set" ]; then
+        echo "Moving files from datasets/validation_set/ to datasets/..."
+        rsync -a datasets/validation_set/ datasets/
+        rm -rf datasets/validation_set
+    fi
+    
 else
     echo "WARNING: validation_set.zip not found. Assuming you manually placed files in datasets/"
 fi
