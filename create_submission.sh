@@ -15,13 +15,7 @@ ANG_RES=5
 SCALE=4
 
 # Results directory
-RESULTS_DIR="./log/SR_${ANG_RES}x${ANG_RES}_${SCALE}x/ALL/$MODEL_NAME/results/TEST"
-
-if [ ! -d "$RESULTS_DIR" ]; then
-    echo "ERROR: Results directory not found: $RESULTS_DIR"
-    echo "Please run inference first: ./inference.sh"
-    exit 1
-fi
+# Results handling now split per dataset below
 
 # Create submission directory
 SUBMISSION_DIR="./submission_$(date +%Y%m%d_%H%M%S)"
@@ -31,19 +25,21 @@ mkdir -p "$SUBMISSION_DIR/Synth"
 echo "Copying results..."
 
 # Copy Real results
-if [ -d "$RESULTS_DIR/NTIRE_Val_Real" ]; then
-    cp -r "$RESULTS_DIR/NTIRE_Val_Real"/* "$SUBMISSION_DIR/Real/"
+REAL_RESULTS_DIR="./log/SR_${ANG_RES}x${ANG_RES}_${SCALE}x/NTIRE_Val_Real/$MODEL_NAME/results/TEST/NTIRE_Val_Real"
+if [ -d "$REAL_RESULTS_DIR" ]; then
+    cp -r "$REAL_RESULTS_DIR"/* "$SUBMISSION_DIR/Real/"
     echo "  ✓ NTIRE_Val_Real copied"
 else
-    echo "  ✗ NTIRE_Val_Real not found"
+    echo "  ✗ NTIRE_Val_Real not found at $REAL_RESULTS_DIR"
 fi
 
 # Copy Synthetic results
-if [ -d "$RESULTS_DIR/NTIRE_Val_Synth" ]; then
-    cp -r "$RESULTS_DIR/NTIRE_Val_Synth"/* "$SUBMISSION_DIR/Synth/"
+SYNTH_RESULTS_DIR="./log/SR_${ANG_RES}x${ANG_RES}_${SCALE}x/NTIRE_Val_Synth/$MODEL_NAME/results/TEST/NTIRE_Val_Synth"
+if [ -d "$SYNTH_RESULTS_DIR" ]; then
+    cp -r "$SYNTH_RESULTS_DIR"/* "$SUBMISSION_DIR/Synth/"
     echo "  ✓ NTIRE_Val_Synth copied"
 else
-    echo "  ✗ NTIRE_Val_Synth not found"
+    echo "  ✗ NTIRE_Val_Synth not found at $SYNTH_RESULTS_DIR"
 fi
 
 # Create ZIP
