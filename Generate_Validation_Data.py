@@ -59,6 +59,12 @@ def main(args):
                 # Extract central angRes * angRes views
                 LF = LF[(U-angRes)//2:(U+angRes)//2, (V-angRes)//2:(V+angRes)//2, 0:H, 0:W, 0:3]
                 LF = LF.astype('double')
+                
+                # Normalize to 0-255 if data is in 0-1 range (common for .mat files)
+                if LF.max() <= 1.0:
+                    LF = LF * 255.0
+                    print(f"  [INFO] Normalized {file} from 0-1 to 0-255 range")
+                
                 (U, V, H, W, _) = LF.shape
 
                 idx_save = idx_save + 1
