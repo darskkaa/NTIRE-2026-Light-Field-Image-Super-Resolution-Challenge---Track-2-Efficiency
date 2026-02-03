@@ -41,14 +41,17 @@ conda create -n lfsr python=3.10 -y 2>/dev/null || true
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate lfsr
 
-# Install PyTorch with CUDA 12.4 (compatible with 12.8)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --quiet
+# Install PyTorch with CUDA 12.4 (compatible with 12.8) - VERBOSE
+echo "  Downloading PyTorch (~1.3GB)..."
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
-# Install mamba-ssm (REQUIRED)
-pip install mamba-ssm causal-conv1d --quiet
+# Install mamba-ssm (REQUIRED) - VERBOSE
+echo "  Installing mamba-ssm (compiling CUDA kernels)..."
+pip install mamba-ssm causal-conv1d
 
-# Install other deps
-pip install h5py einops tqdm fvcore gdown scipy scikit-image imageio xlwt matplotlib --quiet
+# Install other deps - VERBOSE
+echo "  Installing dependencies..."
+pip install h5py einops tqdm fvcore gdown scipy scikit-image imageio xlwt matplotlib
 
 echo "✓ Environment ready"
 
@@ -63,41 +66,46 @@ cd datasets
 
 # EPFL
 if [ ! -d "EPFL" ]; then
-    echo "  Downloading EPFL..."
-    gdown --fuzzy "https://drive.google.com/file/d/19aBn1DvW4ynSLjAPhDeB30p_umwBO8EN/view" -O EPFL.zip --quiet
-    unzip -q EPFL.zip -d EPFL_tmp && mv EPFL_tmp/*/* EPFL/ 2>/dev/null || mv EPFL_tmp/* EPFL/
+    echo "  Downloading EPFL (450MB)..."
+    gdown --fuzzy "https://drive.google.com/file/d/19aBn1DvW4ynSLjAPhDeB30p_umwBO8EN/view" -O EPFL.zip
+    echo "  Extracting EPFL..."
+    unzip -o EPFL.zip -d EPFL_tmp && mv EPFL_tmp/*/* EPFL/ 2>/dev/null || mv EPFL_tmp/* EPFL/
     rm -rf EPFL_tmp EPFL.zip
 fi
 
 # HCI_new
 if [ ! -d "HCI_new" ]; then
-    echo "  Downloading HCI_new..."
-    gdown --fuzzy "https://drive.google.com/file/d/1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9/view" -O HCI_new.zip --quiet
-    unzip -q HCI_new.zip -d HCI_new_tmp && mv HCI_new_tmp/*/* HCI_new/ 2>/dev/null || mv HCI_new_tmp/* HCI_new/
+    echo "  Downloading HCI_new (1.8GB)..."
+    gdown --fuzzy "https://drive.google.com/file/d/1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9/view" -O HCI_new.zip
+    echo "  Extracting HCI_new..."
+    unzip -o HCI_new.zip -d HCI_new_tmp && mv HCI_new_tmp/*/* HCI_new/ 2>/dev/null || mv HCI_new_tmp/* HCI_new/
     rm -rf HCI_new_tmp HCI_new.zip
 fi
 
 # HCI_old
 if [ ! -d "HCI_old" ]; then
-    echo "  Downloading HCI_old..."
-    gdown --fuzzy "https://drive.google.com/file/d/1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG/view" -O HCI_old.zip --quiet
-    unzip -q HCI_old.zip -d HCI_old_tmp && mv HCI_old_tmp/*/* HCI_old/ 2>/dev/null || mv HCI_old_tmp/* HCI_old/
+    echo "  Downloading HCI_old (500MB)..."
+    gdown --fuzzy "https://drive.google.com/file/d/1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG/view" -O HCI_old.zip
+    echo "  Extracting HCI_old..."
+    unzip -o HCI_old.zip -d HCI_old_tmp && mv HCI_old_tmp/*/* HCI_old/ 2>/dev/null || mv HCI_old_tmp/* HCI_old/
     rm -rf HCI_old_tmp HCI_old.zip
 fi
 
 # INRIA_Lytro
 if [ ! -d "INRIA_Lytro" ]; then
-    echo "  Downloading INRIA_Lytro..."
-    gdown --fuzzy "https://drive.google.com/file/d/1XNMTwczPpooktQUjVWLjgQpXRi-Gf4RQ/view" -O INRIA.zip --quiet
-    unzip -q INRIA.zip -d INRIA_tmp && mv INRIA_tmp/*/* INRIA_Lytro/ 2>/dev/null || mv INRIA_tmp/* INRIA_Lytro/
+    echo "  Downloading INRIA_Lytro (1.5GB)..."
+    gdown --fuzzy "https://drive.google.com/file/d/1XNMTwczPpooktQUjVWLjgQpXRi-Gf4RQ/view" -O INRIA.zip
+    echo "  Extracting INRIA_Lytro..."
+    unzip -o INRIA.zip -d INRIA_tmp && mv INRIA_tmp/*/* INRIA_Lytro/ 2>/dev/null || mv INRIA_tmp/* INRIA_Lytro/
     rm -rf INRIA_tmp INRIA.zip
 fi
 
 # STFgantry
 if [ ! -d "STFgantry" ]; then
-    echo "  Downloading STFgantry..."
-    gdown --fuzzy "https://drive.google.com/file/d/1stqpt2c0LCbglZg8rjipCoPP4o-NC9q3/view" -O Stanford.zip --quiet
-    unzip -q Stanford.zip -d Stanford_tmp && mv Stanford_tmp/*/* STFgantry/ 2>/dev/null || mv Stanford_tmp/* STFgantry/
+    echo "  Downloading STFgantry (3.2GB)..."
+    gdown --fuzzy "https://drive.google.com/file/d/1stqpt2c0LCbglZg8rjipCoPP4o-NC9q3/view" -O Stanford.zip
+    echo "  Extracting STFgantry..."
+    unzip -o Stanford.zip -d Stanford_tmp && mv Stanford_tmp/*/* STFgantry/ 2>/dev/null || mv Stanford_tmp/* STFgantry/
     rm -rf Stanford_tmp Stanford.zip
 fi
 
