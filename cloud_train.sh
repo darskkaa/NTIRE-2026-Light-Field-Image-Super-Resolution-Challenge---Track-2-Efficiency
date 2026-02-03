@@ -51,7 +51,7 @@ pip install mamba-ssm causal-conv1d
 
 # Install other deps - VERBOSE
 echo "  Installing dependencies..."
-pip install h5py einops tqdm fvcore gdown scipy scikit-image imageio xlwt matplotlib
+pip install h5py einops tqdm fvcore gdown scipy scikit-image imageio xlwt matplotlib ninja packaging
 
 echo "✓ Environment ready"
 
