@@ -1,12 +1,12 @@
 #!/bin/bash
 # ============================================================================
-# Training Script for MyEfficientLFNet - NTIRE 2026 Track 2
+# Training Script for MyEfficientLFNetV4_5 - NTIRE 2026 Track 2 (FINAL)
 # ============================================================================
 
 set -e
 
 echo "=============================================="
-echo "Training MyEfficientLFNet"
+echo "Training MyEfficientLFNetV4_5 (FINAL VERSION)"
 echo "=============================================="
 
 # Activate virtual environment if exists
@@ -30,11 +30,11 @@ echo ""
 
 # Verify model efficiency before training
 echo "Verifying model efficiency..."
-python check_efficiency.py --model_name MyEfficientLFNet
+python check_efficiency.py --model_name MyEfficientLFNetV4_5
 echo ""
 
 # Training configuration
-MODEL_NAME="MyEfficientLFNet"
+MODEL_NAME="MyEfficientLFNetV4_5"
 ANG_RES=5
 SCALE=4
 BATCH_SIZE=4

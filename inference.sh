@@ -16,7 +16,7 @@ if [ -d "./venv_lfsr" ]; then
 fi
 
 # Configuration
-MODEL_NAME="MyEfficientLFNet"
+MODEL_NAME="MyEfficientLFNetV4_5"
 ANG_RES=5
 SCALE=4
 DEVICE="cuda:0"

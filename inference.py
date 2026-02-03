@@ -9,6 +9,7 @@ import h5py
 from torchvision.transforms import ToTensor
 import imageio
 from tqdm import tqdm
+from fvcore.nn import FlopCountAnalysis
 
 
 def MultiTestSetDataLoader(args):
@@ -113,6 +114,16 @@ def main(args):
     MODEL = importlib.import_module(MODEL_PATH)
     net = MODEL.get_model(args)
 
+    ''' FLOPs Check '''
+    try:
+        dummy_input = torch.randn(1, 1, 160, 160).to(args.device)
+        net_check = net.to(args.device)
+        flops = FlopCountAnalysis(net_check, dummy_input)
+        print(f"\n[Efficiency Check] FLOPs: {flops.total()/1e9:.2f} G (Limit: 20G)")
+    except Exception as e:
+        print(f"\n[Efficiency Check] Failed to calculate FLOPs: {e}")
+    net = net.cpu() # Reset to CPU for state dict loading logic below
+
 
     ''' Load Pre-Trained PTH '''
     if args.use_pre_ckpt == False:
@@ -212,16 +223,6 @@ def test(test_loader, device, net, save_dir=None):
 
 if __name__ == '__main__':
     from option import args
-    args.scale_factor = 4
-    args.path_for_test = './data_for_inference/'
-
-
-    # args.data_name = 'NTIRE_Val_Real'
-    # args.model_name = 'LFT'
-    # args.path_pre_pth = './pth/LFT_5x5_4x_model.pth'
-    # main(args)
-
-    args.data_name = 'NTIRE_Val_Synth'
-    args.model_name = 'LFT'
-    args.path_pre_pth = './pth/LFT_5x5_4x_model.pth'
+    # Use CLI arguments (see option.py)
+    # Example: python inference.py --model_name MyEfficientLFNet --scale_factor 4 --path_pre_pth ./pth/model.pth --path_for_test ./data_for_inference/ --data_name NTIRE_Val_Real
     main(args)
