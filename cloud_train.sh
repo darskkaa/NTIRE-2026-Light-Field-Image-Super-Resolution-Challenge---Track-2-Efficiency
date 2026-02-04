@@ -12,14 +12,28 @@ echo "NTIRE 2026 Track 2 - Training Pipeline"
 echo "=============================================="
 
 # ============================================================================
-# STEP 1: Clone Repository
+# STEP 1: Project Setup (Migration)
 # ============================================================================
 echo ""
-echo "[1/8] Cloning BasicLFSR repository..."
-if [ ! -d "BasicLFSR" ]; then
-    git clone https://github.com/ZhengyuLiang24/BasicLFSR.git
+echo "[1/8] Validating project structure..."
+
+# Fix dataset location if they were downloaded into the generated subdir
+if [ -d "BasicLFSR/datasets" ]; then
+    echo "  Moving datasets from BasicLFSR/datasets to ./datasets..."
+    mkdir -p datasets
+    # Move content (using cp/rm to handle cross-device moves cleanly if needed)
+    cp -rn BasicLFSR/datasets/* datasets/ 2>/dev/null || true
 fi
-cd BasicLFSR
+
+# Fix patch location if generated in subdir
+if [ -d "BasicLFSR/data_for_train" ]; then
+    echo "  Moving patches from BasicLFSR/data_for_train to ./data_for_train..."
+    mkdir -p data_for_train
+    cp -rn BasicLFSR/data_for_train/* data_for_train/ 2>/dev/null || true
+fi
+
+# We stay in proper root directory
+# cd BasicLFSR  <-- REMOVED
 
 # ============================================================================
 # STEP 2: Environment Setup
