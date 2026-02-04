@@ -7,6 +7,15 @@ from utils.utils_datasets import TrainSetDataLoader, MultiTestSetDataLoader
 from collections import OrderedDict
 import imageio
 
+# Masked Angular Pre-Training (LFTransMamba-style, +0.2 dB boost)
+try:
+    from utils.masked_pretraining import ProgressiveMasking, apply_masked_pretraining
+    MASKED_PRETRAIN_AVAILABLE = True
+except ImportError:
+    MASKED_PRETRAIN_AVAILABLE = False
+    print("Warning: masked_pretraining module not found. Proceeding without it.")
+
+
 
 def main(args):
     ''' Create Dir for Save'''
@@ -115,9 +124,23 @@ def main(args):
     )
     
     # AMP Scaler for mixed precision training
-    # AMP Scaler for mixed precision training
     scaler = torch.amp.GradScaler('cuda')
-
+    
+    # Masked Angular Pre-Training (LFTransMamba-style)
+    # Reference: https://openaccess.thecvf.com/content/CVPR2025W/NTIRE/papers/Jin_LFTransMamba
+    # Adds +0.2-0.3 dB PSNR with zero inference cost
+    use_masked_pretrain = getattr(args, 'use_masked_pretrain', True) and MASKED_PRETRAIN_AVAILABLE
+    if use_masked_pretrain:
+        mask_pretrain = ProgressiveMasking(
+            angRes=args.angRes_in,
+            start_ratio=0.1,   # Start with 10% masking
+            end_ratio=0.3,     # Increase to 30% by warmup_epochs
+            warmup_epochs=min(20, args.epoch // 4)
+        )
+        logger.log_string('Masked Angular Pre-Training: ENABLED (progressive 10%→30%)')
+    else:
+        mask_pretrain = None
+        logger.log_string('Masked Angular Pre-Training: DISABLED')
 
 
     ''' TRAINING & TEST '''
@@ -125,8 +148,16 @@ def main(args):
     for idx_epoch in range(start_epoch, args.epoch):
         logger.log_string('\nEpoch %d /%s:' % (idx_epoch + 1, args.epoch))
 
+        # Update masking ratio if using progressive masking
+        if use_masked_pretrain and mask_pretrain is not None:
+            mask_pretrain.set_epoch(idx_epoch)
+            mask_pretrain.train()
+
         ''' Training '''
-        loss_epoch_train, psnr_epoch_train, ssim_epoch_train = train(train_loader, device, net, criterion, optimizer, scaler)
+        loss_epoch_train, psnr_epoch_train, ssim_epoch_train = train(
+            train_loader, device, net, criterion, optimizer, scaler,
+            mask_pretrain=mask_pretrain if use_masked_pretrain else None
+        )
         logger.log_string('The %dth Train, loss is: %.5f, psnr is %.5f, ssim is %.5f' %
                           (idx_epoch + 1, loss_epoch_train, psnr_epoch_train, ssim_epoch_train))
 
@@ -187,8 +218,20 @@ def main(args):
     pass
 
 
-def train(train_loader, device, net, criterion, optimizer, scaler):
-    ''' training one epoch '''
+def train(train_loader, device, net, criterion, optimizer, scaler, mask_pretrain=None):
+    '''
+    Training one epoch.
+    
+    Args:
+        train_loader: DataLoader for training data
+        device: Device to train on
+        net: Model to train
+        criterion: Loss function
+        optimizer: Optimizer
+        scaler: GradScaler for AMP
+        mask_pretrain: Optional ProgressiveMasking for masked angular pre-training
+                      (LFTransMamba-style, adds +0.2 dB PSNR)
+    '''
     psnr_iter_train = []
     loss_iter_train = []
     ssim_iter_train = []
@@ -200,9 +243,15 @@ def train(train_loader, device, net, criterion, optimizer, scaler):
         data = data.to(device)      # low resolution
         label = label.to(device)    # high resolution
         
+        # Apply Masked Angular Pre-Training if enabled
+        # This masks random angular views in LR input, forcing model to learn
+        # strong angular correlations. HR target is NOT masked.
+        # Reference: LFTransMamba (CVPR 2025W) - adds +0.2-0.3 dB PSNR
+        if mask_pretrain is not None:
+            data, mask_info = mask_pretrain(data)
+        
         optimizer.zero_grad()
         
-        # Mixed Precision Training
         # Mixed Precision Training
         with torch.amp.autocast('cuda'):
             out = net(data, data_info)
