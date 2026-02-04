@@ -128,6 +128,7 @@ echo "✓ Training patches generated"
 # ============================================================================
 echo ""
 echo "[5/8] Verifying model..."
+cd BasicLFSR || exit
 
 python -c "
 import torch
