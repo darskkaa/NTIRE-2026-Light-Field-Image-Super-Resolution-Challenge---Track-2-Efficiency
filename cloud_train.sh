@@ -145,12 +145,13 @@ echo "✓ Training patches generated"
 # ============================================================================
 echo ""
 echo "[5/8] Verifying model..."
-cd BasicLFSR || exit
+# We are already in BasicLFSR directory from step 1
 
 python -c "
 import torch
 import sys
-sys.path.insert(0, '.')
+import os
+sys.path.append(os.getcwd())
 from model.SR.MyEfficientLFNetV5 import get_model, count_parameters
 
 class Args:
