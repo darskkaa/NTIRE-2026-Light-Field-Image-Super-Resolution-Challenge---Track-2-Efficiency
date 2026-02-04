@@ -1,0 +1,353 @@
+from torch.utils.data import DataLoader
+import importlib
+from tqdm import tqdm
+import torch.backends.cudnn as cudnn
+from utils.utils import *
+from utils.utils_datasets import TrainSetDataLoader, MultiTestSetDataLoader
+from collections import OrderedDict
+import imageio
+
+# Masked Angular Pre-Training (LFTransMamba-style, +0.2 dB boost)
+try:
+    from utils.masked_pretraining import ProgressiveMasking, apply_masked_pretraining
+    MASKED_PRETRAIN_AVAILABLE = True
+except ImportError:
+    MASKED_PRETRAIN_AVAILABLE = False
+    print("Warning: masked_pretraining module not found. Proceeding without it.")
+
+
+
+def main(args):
+    ''' Create Dir for Save'''
+    log_dir, checkpoints_dir, val_dir = create_dir(args)
+
+    ''' Logger '''
+    logger = Logger(log_dir, args)
+
+    ''' CPU or Cuda'''
+    device = torch.device(args.device)
+    if 'cuda' in args.device:
+        torch.cuda.set_device(device)
+
+    ''' DATA Training LOADING '''
+    logger.log_string('\nLoad Training Dataset ...')
+    train_Dataset = TrainSetDataLoader(args)
+    logger.log_string("The number of training data is: %d" % len(train_Dataset))
+    train_loader = torch.utils.data.DataLoader(dataset=train_Dataset, num_workers=args.num_workers,
+                                               batch_size=args.batch_size, shuffle=True,
+                                               pin_memory=True, prefetch_factor=4 if args.num_workers > 0 else None)
+
+    ''' DATA Validation LOADING '''
+    logger.log_string('\nLoad Validation Dataset ...')
+    test_Names, test_Loaders, length_of_tests = MultiTestSetDataLoader(args)
+    logger.log_string("The number of validation data is: %d" % length_of_tests)
+
+
+    ''' MODEL LOADING '''
+    logger.log_string('\nModel Initial ...')
+    MODEL_PATH = 'model.' + args.task + '.' + args.model_name
+    MODEL = importlib.import_module(MODEL_PATH)
+    net = MODEL.get_model(args)
+
+
+    ''' Load Pre-Trained PTH '''
+    if args.use_pre_ckpt == False:
+        net.apply(MODEL.weights_init)
+        start_epoch = 0
+        logger.log_string('Do not use pre-trained model!')
+    else:
+        try:
+            ckpt_path = args.path_pre_pth
+            checkpoint = torch.load(ckpt_path, map_location='cpu')
+            start_epoch = checkpoint['epoch']
+            try:
+                new_state_dict = OrderedDict()
+                for k, v in checkpoint['state_dict'].items():
+                    name = 'module.' + k  # add `module.`
+                    new_state_dict[name] = v
+                # load params
+                net.load_state_dict(new_state_dict)
+                logger.log_string('Use pretrain model!')
+            except:
+                new_state_dict = OrderedDict()
+                for k, v in checkpoint['state_dict'].items():
+                    new_state_dict[k] = v
+                # load params
+                net.load_state_dict(new_state_dict)
+                logger.log_string('Use pretrain model!')
+        except:
+            net = MODEL.get_model(args)
+            net.apply(MODEL.weights_init)
+            start_epoch = 0
+            logger.log_string('No existing model, starting training from scratch...')
+            pass
+        pass
+    net = net.to(device)
+    cudnn.benchmark = True
+
+    ''' Print Parameters '''
+    logger.log_string('PARAMETER ...')
+    logger.log_string(args)
+
+
+    ''' LOSS LOADING '''
+    criterion = MODEL.get_loss(args).to(device)
+
+
+    ''' Optimizer - AdamW (better weight decay) '''
+    optimizer = torch.optim.AdamW(
+        [paras for paras in net.parameters() if paras.requires_grad == True],
+        lr=args.lr,
+        betas=(0.9, 0.999),
+        eps=1e-08,
+        weight_decay=1e-4  # AdamW handles weight decay better
+    )
+    
+    ''' Learning Rate Scheduler - Cosine Annealing with Warmup (SOTA) '''
+    # Calculate total steps for cosine annealing
+    total_epochs = args.epoch
+    warmup_epochs = min(5, total_epochs // 10)  # 5 epochs or 10% warmup
+    
+    # Main scheduler: Cosine Annealing after warmup
+    main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_epochs - warmup_epochs, eta_min=1e-6
+    )
+    
+    # Warmup scheduler: Linear warmup
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs
+    )
+    
+    # Combine: Warmup then Cosine
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs]
+    )
+    
+    # AMP Scaler for mixed precision training
+    scaler = torch.amp.GradScaler('cuda')
+    
+    # Masked Angular Pre-Training (LFTransMamba-style)
+    # Reference: https://openaccess.thecvf.com/content/CVPR2025W/NTIRE/papers/Jin_LFTransMamba
+    # Adds +0.2-0.3 dB PSNR with zero inference cost
+    use_masked_pretrain = getattr(args, 'use_masked_pretrain', True) and MASKED_PRETRAIN_AVAILABLE
+    if use_masked_pretrain:
+        mask_pretrain = ProgressiveMasking(
+            angRes=args.angRes_in,
+            start_ratio=0.1,   # Start with 10% masking
+            end_ratio=0.3,     # Increase to 30% by warmup_epochs
+            warmup_epochs=min(20, args.epoch // 4)
+        )
+        logger.log_string('Masked Angular Pre-Training: ENABLED (progressive 10%→30%)')
+    else:
+        mask_pretrain = None
+        logger.log_string('Masked Angular Pre-Training: DISABLED')
+
+
+    ''' TRAINING & TEST '''
+    logger.log_string('\nStart training...')
+    for idx_epoch in range(start_epoch, args.epoch):
+        logger.log_string('\nEpoch %d /%s:' % (idx_epoch + 1, args.epoch))
+
+        # Update masking ratio if using progressive masking
+        if use_masked_pretrain and mask_pretrain is not None:
+            mask_pretrain.set_epoch(idx_epoch)
+            mask_pretrain.train()
+
+        ''' Training '''
+        loss_epoch_train, psnr_epoch_train, ssim_epoch_train = train(
+            train_loader, device, net, criterion, optimizer, scaler,
+            mask_pretrain=mask_pretrain if use_masked_pretrain else None
+        )
+        logger.log_string('The %dth Train, loss is: %.5f, psnr is %.5f, ssim is %.5f' %
+                          (idx_epoch + 1, loss_epoch_train, psnr_epoch_train, ssim_epoch_train))
+
+
+        ''' Save PTH  '''
+        if args.local_rank == 0:
+            save_ckpt_path = str(checkpoints_dir) + '/%s_%dx%d_%dx_epoch_%02d_model.pth' % (
+            args.model_name, args.angRes_in, args.angRes_in, args.scale_factor, idx_epoch + 1)
+            state = {
+                'epoch': idx_epoch + 1,
+                'state_dict': net.module.state_dict() if hasattr(net, 'module') else net.state_dict(),
+            }
+            torch.save(state, save_ckpt_path)
+            logger.log_string('Saving the epoch_%02d model at %s' % (idx_epoch + 1, save_ckpt_path))
+
+
+        ''' Validation '''
+        step = 5
+        if (idx_epoch + 1)%step==0 or idx_epoch > args.epoch-step:
+            with torch.no_grad():
+                ''' Create Excel for PSNR/SSIM '''
+                excel_file = ExcelFile()
+
+                psnr_testset = []
+                ssim_testset = []
+                for index, test_name in enumerate(test_Names):
+                    test_loader = test_Loaders[index]
+
+                    epoch_dir = val_dir.joinpath('VAL_epoch_%02d' % (idx_epoch + 1))
+                    epoch_dir.mkdir(exist_ok=True)
+                    save_dir = epoch_dir.joinpath(test_name)
+                    save_dir.mkdir(exist_ok=True)
+
+                    psnr_iter_test, ssim_iter_test, LF_name = test(test_loader, device, net, args, save_dir)
+                    excel_file.write_sheet(test_name, LF_name, psnr_iter_test, ssim_iter_test)
+
+
+                    psnr_epoch_test = float(np.array(psnr_iter_test).mean())
+                    ssim_epoch_test = float(np.array(ssim_iter_test).mean())
+
+
+                    psnr_testset.append(psnr_epoch_test)
+                    ssim_testset.append(ssim_epoch_test)
+                    logger.log_string('The %dth Test on %s, psnr/ssim is %.2f/%.3f' % (
+                    idx_epoch + 1, test_name, psnr_epoch_test, ssim_epoch_test))
+                    pass
+                psnr_mean_test = float(np.array(psnr_testset).mean())
+                ssim_mean_test = float(np.array(ssim_testset).mean())
+                logger.log_string('The mean psnr on testsets is %.5f, mean ssim is %.5f'
+                                  % (psnr_mean_test, ssim_mean_test))
+                excel_file.xlsx_file.save(str(epoch_dir) + '/evaluation.xls')
+                pass
+            pass
+
+        ''' scheduler '''
+        scheduler.step()
+        pass
+    pass
+
+
+def train(train_loader, device, net, criterion, optimizer, scaler, mask_pretrain=None):
+    '''
+    Training one epoch.
+    
+    Args:
+        train_loader: DataLoader for training data
+        device: Device to train on
+        net: Model to train
+        criterion: Loss function
+        optimizer: Optimizer
+        scaler: GradScaler for AMP
+        mask_pretrain: Optional ProgressiveMasking for masked angular pre-training
+                      (LFTransMamba-style, adds +0.2 dB PSNR)
+    '''
+    psnr_iter_train = []
+    loss_iter_train = []
+    ssim_iter_train = []
+    for idx_iter, (data, label, data_info) in tqdm(enumerate(train_loader), total=len(train_loader), ncols=70):
+        [Lr_angRes_in, Lr_angRes_out] = data_info
+        data_info[0] = Lr_angRes_in[0].item()
+        data_info[1] = Lr_angRes_out[0].item()
+
+        data = data.to(device)      # low resolution
+        label = label.to(device)    # high resolution
+        
+        # Apply Masked Angular Pre-Training if enabled
+        # This masks random angular views in LR input, forcing model to learn
+        # strong angular correlations. HR target is NOT masked.
+        # Reference: LFTransMamba (CVPR 2025W) - adds +0.2-0.3 dB PSNR
+        if mask_pretrain is not None:
+            data, mask_info = mask_pretrain(data)
+        
+        optimizer.zero_grad()
+        
+        # Mixed Precision Training
+        with torch.amp.autocast('cuda'):
+            out = net(data, data_info)
+            loss = criterion(out, label, data_info)
+
+        if torch.isnan(loss):
+            print(f"Error: Loss is NaN at epoch {idx_iter}")
+            continue
+
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)  # Unscale before clipping
+        torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)  # Gradient clipping
+        scaler.step(optimizer)
+        scaler.update()
+        
+        # torch.cuda.empty_cache() # Removed for speed
+
+        loss_iter_train.append(loss.data.cpu())
+        psnr, ssim = cal_metrics(args, label, out.float()) # Convert to float for metric calc
+        psnr_iter_train.append(psnr)
+        ssim_iter_train.append(ssim)
+        pass
+
+    loss_epoch_train = float(np.array(loss_iter_train).mean())
+    psnr_epoch_train = float(np.array(psnr_iter_train).mean())
+    ssim_epoch_train = float(np.array(ssim_iter_train).mean())
+
+    return loss_epoch_train, psnr_epoch_train, ssim_epoch_train
+
+
+
+def test(test_loader, device, net, args, save_dir=None):
+    LF_iter_test = []
+    psnr_iter_test = []
+    ssim_iter_test = []
+    for idx_iter, (Lr_SAI_y, Hr_SAI_y, Sr_SAI_cbcr, data_info, LF_name) in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
+        [Lr_angRes_in, Lr_angRes_out] = data_info
+        data_info[0] = Lr_angRes_in[0].item()
+        data_info[1] = Lr_angRes_out[0].item()
+
+        Lr_SAI_y = Lr_SAI_y.squeeze().to(device)  # numU, numV, h*angRes, w*angRes
+        Hr_SAI_y = Hr_SAI_y
+        Sr_SAI_cbcr = Sr_SAI_cbcr
+
+        ''' Crop LFs into Patches '''
+        subLFin = LFdivide(Lr_SAI_y, args.angRes_in, args.patch_size_for_test, args.stride_for_test)
+        numU, numV, H, W = subLFin.size()
+        subLFin = rearrange(subLFin, 'n1 n2 a1h a2w -> (n1 n2) 1 a1h a2w')
+        subLFout = torch.zeros(numU * numV, 1, args.angRes_in * args.patch_size_for_test * args.scale_factor,
+                               args.angRes_in * args.patch_size_for_test * args.scale_factor)
+
+        ''' SR the Patches '''
+        for i in range(0, numU * numV, args.minibatch_for_test):
+            tmp = subLFin[i:min(i + args.minibatch_for_test, numU * numV), :, :, :]
+            with torch.no_grad():
+                net.eval()
+                torch.cuda.empty_cache()
+                out = net(tmp.to(device), data_info)
+                subLFout[i:min(i + args.minibatch_for_test, numU * numV), :, :, :] = out
+        subLFout = rearrange(subLFout, '(n1 n2) 1 a1h a2w -> n1 n2 a1h a2w', n1=numU, n2=numV)
+
+        ''' Restore the Patches to LFs '''
+        Sr_4D_y = LFintegrate(subLFout, args.angRes_out, args.patch_size_for_test * args.scale_factor,
+                              args.stride_for_test * args.scale_factor, Hr_SAI_y.size(-2)//args.angRes_out, Hr_SAI_y.size(-1)//args.angRes_out)
+        Sr_SAI_y = rearrange(Sr_4D_y, 'a1 a2 h w -> 1 1 (a1 h) (a2 w)')
+
+        ''' Calculate the PSNR & SSIM '''
+        psnr, ssim = cal_metrics(args, Hr_SAI_y, Sr_SAI_y)
+        psnr_iter_test.append(psnr)
+        ssim_iter_test.append(ssim)
+        LF_iter_test.append(LF_name[0])
+
+
+        ''' Save RGB '''
+        if save_dir is not None:
+            save_dir_ = save_dir.joinpath(LF_name[0])
+            save_dir_.mkdir(exist_ok=True)
+            Sr_SAI_ycbcr = torch.cat((Sr_SAI_y, Sr_SAI_cbcr), dim=1)
+            Sr_SAI_rgb = (ycbcr2rgb(Sr_SAI_ycbcr.squeeze().permute(1, 2, 0).numpy()).clip(0,1)*255).astype('uint8')
+            Sr_4D_rgb = rearrange(Sr_SAI_rgb, '(a1 h) (a2 w) c -> a1 a2 h w c', a1=args.angRes_out, a2=args.angRes_out)
+
+            # Save all views with CodaBench-compliant naming: View_i_j.bmp
+            for i in range(args.angRes_out):
+                for j in range(args.angRes_out):
+                    img = Sr_4D_rgb[i, j, :, :, :]
+                    path = str(save_dir_) + '/View_' + str(i) + '_' + str(j) + '.bmp'
+                    imageio.imwrite(path, img)
+                    pass
+                pass
+            pass
+        pass
+
+    return psnr_iter_test, ssim_iter_test, LF_iter_test
+
+
+if __name__ == '__main__':
+    from option import args
+
+    main(args)

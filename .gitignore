@@ -1,0 +1,12 @@
+__pycache__/
+.idea/
+log/*
+data_for_training/
+data_for_inference/
+datasets/
+venv_lfsr/
+*.pth
+*.h5
+*.tar
+*.zip
+_temp/
