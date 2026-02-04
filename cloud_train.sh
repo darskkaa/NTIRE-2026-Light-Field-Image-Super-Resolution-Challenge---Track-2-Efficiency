@@ -10,6 +10,20 @@
 # 4. Use /venv/lfsr/bin/python directly, not conda activate
 # 5. Force uninstall old PyTorch before installing nightly
 # ============================================================================
+#
+# DATASET GOOGLE DRIVE IDs:
+# EPFL:           19aBn1DvW4ynSLjAPhDeB30p_umwBO8EN
+# HCI_new:        1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9
+# HCI_old:        1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG
+# INRIA_Lytro:    1XNMTwczPpooktQUjVWLjgQpXRi-Gf4RQ
+# Stanford_Gantry: 1stqpt2c0LCbglZg8rjipCoPP4o-NC9q3
+#
+# EXPECTED PERFORMANCE:
+# - Parameters: 367,526 (<1M ✓)
+# - PSNR (worst): ~28 dB
+# - PSNR (expected): 30.5-31.0 dB
+# - PSNR (best): 31.5+ dB
+# ============================================================================
 
 set -e  # Exit on error
 
@@ -33,7 +47,7 @@ fi
 # STEP 1: Verify Project Structure
 # ============================================================================
 echo ""
-echo "[1/7] Checking project structure..."
+echo "[1/8] Checking project structure..."
 
 if [ ! -f "train.py" ]; then
     echo "ERROR: train.py not found. Are you in the project root?"
@@ -54,10 +68,47 @@ fi
 echo "  ✓ Project structure OK"
 
 # ============================================================================
+# STEP 2: Download Datasets (if not present)
+# ============================================================================
+echo ""
+echo "[2/8] Downloading datasets from Google Drive..."
+
+# Install gdown if needed
+$PIP install gdown -q
+
+# Download function with retry
+download_dataset() {
+    local FILE_ID="$1"
+    local OUTPUT="$2"
+    
+    if [ -f "$OUTPUT" ] || [ -d "datasets/${OUTPUT%.zip}/training" ]; then
+        echo "  ✓ $OUTPUT already exists, skipping"
+        return 0
+    fi
+    
+    echo "  Downloading $OUTPUT..."
+    gdown "$FILE_ID" -O "$OUTPUT" --fuzzy 2>/dev/null || {
+        echo "  ⚠ gdown failed for $OUTPUT (quota exceeded?)"
+        echo "    Manual download: https://drive.google.com/file/d/$FILE_ID/view"
+        return 1
+    }
+}
+
+# Download all 5 datasets
+download_dataset "19aBn1DvW4ynSLjAPhDeB30p_umwBO8EN" "EPFL.zip"
+download_dataset "1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9" "HCI_new.zip"
+download_dataset "1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG" "HCI_old.zip"
+download_dataset "1XNMTwczPpooktQUjVWLjgQpXRi-Gf4RQ" "INRIA_Lytro.zip"
+download_dataset "1stqpt2c0LCbglZg8rjipCoPP4o-NC9q3" "Stanford_Gantry.zip"
+
+echo "  ✓ Dataset download complete"
+
+
+# ============================================================================
 # STEP 2: Extract Datasets (if zips exist)
 # ============================================================================
 echo ""
-echo "[2/7] Checking and extracting datasets..."
+echo "[3/8] Checking and extracting datasets..."
 
 mkdir -p datasets
 
@@ -189,7 +240,7 @@ fi
 # STEP 3: Setup Python Environment (RTX 5090 Compatible)
 # ============================================================================
 echo ""
-echo "[3/7] Setting up Python environment..."
+echo "[4/8] Setting up Python environment..."
 
 # CRITICAL: Force uninstall old PyTorch first (cu124 doesn't support RTX 5090)
 echo "  Removing old PyTorch (if exists)..."
@@ -213,7 +264,7 @@ echo "  ✓ Environment ready (PyTorch Nightly + CUDA 12.8)"
 # STEP 4: Generate Training Patches
 # ============================================================================
 echo ""
-echo "[4/7] Generating training patches..."
+echo "[5/8] Generating training patches..."
 
 # Check if patches already exist
 if [ -d "data_for_training/SR_5x5_4x" ] && [ "$(ls -A data_for_training/SR_5x5_4x 2>/dev/null)" ]; then
@@ -245,7 +296,7 @@ echo "  ✓ Patches ready"
 # STEP 5: Verify Model Loads
 # ============================================================================
 echo ""
-echo "[5/7] Verifying model..."
+echo "[6/8] Verifying model..."
 
 $PYTHON -c "
 import sys
@@ -271,7 +322,7 @@ print('  ✓ Model verified (<1M params)')
 # STEP 6: Training
 # ============================================================================
 echo ""
-echo "[6/7] Starting training..."
+echo "[7/8] Starting training..."
 echo "  Model: MyEfficientLFNetV5"
 echo "  Epochs: 80"
 echo "  Batch Size: 8"
@@ -294,7 +345,7 @@ echo "  ✓ Training complete"
 # STEP 7: Inference & Submission
 # ============================================================================
 echo ""
-echo "[7/7] Running inference..."
+echo "[8/8] Running inference..."
 
 # Find the best checkpoint
 CKPT="log/SR/5x5_4x_MyEfficientLFNetV5/ALL/checkpoints/Best.pth"
