@@ -123,10 +123,20 @@ echo "✓ Datasets downloaded"
 # STEP 4: Generate Training Patches
 # ============================================================================
 echo ""
-echo "[4/8] Generating training patches (H5)..."
+# Check if patches exist (BasicLFSR/data_for_train/SR_5x5_4x)
+if [ -d "data_for_train/SR_5x5_4x" ] && [ "$(ls -A data_for_train/SR_5x5_4x)" ]; then
+    echo "  Training patches found, skipping generation..."
+else
+    echo "  Generating training patches..."
+    python Generate_Data_for_Training.py --angRes 5 --scale_factor 4
+fi
 
-python Generate_Data_for_Training.py --angRes 5 --scale_factor 4
-python Generate_Data_for_Test.py --angRes 5 --scale_factor 4
+if [ -d "data_for_test/SR_5x5_4x" ] && [ "$(ls -A data_for_test/SR_5x5_4x)" ]; then
+    echo "  Test patches found, skipping generation..."
+else
+    echo "  Generating test patches..."
+    python Generate_Data_for_Test.py --angRes 5 --scale_factor 4
+fi
 
 echo "✓ Training patches generated"
 
