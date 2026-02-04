@@ -57,35 +57,116 @@ echo "  ✓ Project structure OK"
 # STEP 2: Extract Datasets (if zips exist)
 # ============================================================================
 echo ""
-echo "[2/7] Checking datasets..."
+echo "[2/7] Checking and extracting datasets..."
 
 mkdir -p datasets
 
-# Extract INRIA if zip exists but folder doesn't have training data
-if [ -f "INRIA.zip" ] && [ ! -d "datasets/INRIA_Lytro/training" ]; then
-    echo "  Extracting INRIA.zip (~8.5GB)..."
-    unzip -q -o INRIA.zip -d datasets/
-    # Handle nested folder structure
-    if [ -d "datasets/INRIA_Lytro/INRIA_Lytro" ]; then
-        mv datasets/INRIA_Lytro/INRIA_Lytro/* datasets/INRIA_Lytro/ 2>/dev/null || true
-        rmdir datasets/INRIA_Lytro/INRIA_Lytro 2>/dev/null || true
+# -------------------------------------------------------------------------
+# Generic function to extract and fix dataset structure
+# Usage: extract_dataset "ZipName" "ExpectedFolderName"
+# -------------------------------------------------------------------------
+extract_dataset() {
+    local ZIP_PATTERN="$1"
+    local FOLDER_NAME="$2"
+    
+    # Find any matching zip file (case insensitive, various naming patterns)
+    local ZIP_FILE=$(ls ${ZIP_PATTERN}*.zip ${ZIP_PATTERN}*.ZIP 2>/dev/null | head -1)
+    
+    if [ -z "$ZIP_FILE" ]; then
+        # Try lowercase
+        ZIP_FILE=$(ls $(echo "$ZIP_PATTERN" | tr '[:upper:]' '[:lower:]')*.zip 2>/dev/null | head -1)
     fi
-    echo "  ✓ INRIA extracted"
-fi
+    
+    # Check if we need to extract
+    if [ -n "$ZIP_FILE" ] && [ ! -d "datasets/$FOLDER_NAME/training" ]; then
+        echo "  Extracting $ZIP_FILE..."
+        
+        # Create temp extraction dir
+        rm -rf temp_extract
+        mkdir -p temp_extract
+        unzip -q -o "$ZIP_FILE" -d temp_extract/
+        
+        # Find the training folder wherever it is (handles nested structures)
+        TRAINING_DIR=$(find temp_extract -type d -name "training" 2>/dev/null | head -1)
+        TEST_DIR=$(find temp_extract -type d -name "test" 2>/dev/null | head -1)
+        
+        if [ -n "$TRAINING_DIR" ]; then
+            mkdir -p "datasets/$FOLDER_NAME"
+            cp -r "$TRAINING_DIR" "datasets/$FOLDER_NAME/"
+            if [ -n "$TEST_DIR" ]; then
+                cp -r "$TEST_DIR" "datasets/$FOLDER_NAME/"
+            fi
+            echo "  ✓ $FOLDER_NAME extracted"
+        else
+            # Fallback: Maybe the zip contains .mat files directly
+            MAT_FILES=$(find temp_extract -name "*.mat" 2>/dev/null | head -1)
+            if [ -n "$MAT_FILES" ]; then
+                mkdir -p "datasets/$FOLDER_NAME/training"
+                find temp_extract -name "*.mat" -exec cp {} "datasets/$FOLDER_NAME/training/" \;
+                echo "  ✓ $FOLDER_NAME extracted (flat structure)"
+            else
+                echo "  ⚠ $ZIP_FILE: Could not find training data inside"
+            fi
+        fi
+        
+        rm -rf temp_extract
+    fi
+}
 
-# Extract STFgantry if zip exists but folder doesn't have training data
-if [ -f "STFgantry.zip" ] && [ ! -d "datasets/STFgantry/training" ]; then
-    echo "  Extracting STFgantry.zip (~4.2GB)..."
-    mkdir -p datasets/STFgantry
-    unzip -q -o STFgantry.zip -d temp_stf/
-    # Handle nested folder structure - move contents up
-    find temp_stf -name "training" -type d -exec cp -r {} datasets/STFgantry/ \; 2>/dev/null || true
-    find temp_stf -name "test" -type d -exec cp -r {} datasets/STFgantry/ \; 2>/dev/null || true
-    rm -rf temp_stf
-    echo "  ✓ STFgantry extracted"
-fi
+# -------------------------------------------------------------------------
+# Extract each dataset (handles various naming conventions)
+# -------------------------------------------------------------------------
 
-# Check all 5 datasets
+# EPFL - might be named EPFL.zip, epfl.zip, EPFL_dataset.zip, etc.
+extract_dataset "EPFL" "EPFL"
+extract_dataset "epfl" "EPFL"
+
+# HCI_new - might be HCI_new.zip, HCInew.zip, HCI-new.zip, etc.
+extract_dataset "HCI_new" "HCI_new"
+extract_dataset "HCInew" "HCI_new"
+extract_dataset "HCI-new" "HCI_new"
+extract_dataset "hci_new" "HCI_new"
+
+# HCI_old - might be HCI_old.zip, HCIold.zip, HCI-old.zip, etc.
+extract_dataset "HCI_old" "HCI_old"
+extract_dataset "HCIold" "HCI_old"
+extract_dataset "HCI-old" "HCI_old"
+extract_dataset "hci_old" "HCI_old"
+
+# INRIA_Lytro - might be INRIA.zip, INRIA_Lytro.zip, Lytro.zip, etc.
+extract_dataset "INRIA" "INRIA_Lytro"
+extract_dataset "inria" "INRIA_Lytro"
+extract_dataset "Lytro" "INRIA_Lytro"
+
+# STFgantry/Stanford_Gantry - multiple naming conventions
+extract_dataset "STFgantry" "STFgantry"
+extract_dataset "Stanford" "STFgantry"
+extract_dataset "stfgantry" "STFgantry"
+extract_dataset "stanford_gantry" "STFgantry"
+extract_dataset "Stanford_Gantry" "STFgantry"
+
+# -------------------------------------------------------------------------
+# Fix any remaining nested folder issues
+# -------------------------------------------------------------------------
+for ds in EPFL HCI_new HCI_old INRIA_Lytro STFgantry; do
+    # Handle double-nested folders like datasets/EPFL/EPFL/training
+    if [ -d "datasets/$ds/$ds/training" ]; then
+        echo "  Fixing nested structure in $ds..."
+        mv "datasets/$ds/$ds/"* "datasets/$ds/" 2>/dev/null || true
+        rmdir "datasets/$ds/$ds" 2>/dev/null || true
+    fi
+    
+    # Handle case where training folder ended up directly in datasets
+    if [ -d "datasets/$ds/training/training" ]; then
+        mv "datasets/$ds/training/training/"* "datasets/$ds/training/" 2>/dev/null || true
+        rmdir "datasets/$ds/training/training" 2>/dev/null || true
+    fi
+done
+
+# -------------------------------------------------------------------------
+# Verify all datasets
+# -------------------------------------------------------------------------
+echo ""
 DATASETS=("EPFL" "HCI_new" "HCI_old" "INRIA_Lytro" "STFgantry")
 MISSING=0
 for ds in "${DATASETS[@]}"; do
@@ -97,6 +178,7 @@ for ds in "${DATASETS[@]}"; do
         MISSING=1
     fi
 done
+
 
 if [ $MISSING -eq 1 ]; then
     echo ""
