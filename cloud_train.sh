@@ -28,8 +28,15 @@ echo ""
 echo "[2/8] Setting up environment..."
 
 # Check if conda exists
-if ! command -v conda &> /dev/null; then
-    echo "Installing Miniconda..."
+# Check if conda exists or needs installation
+if [ -d "$HOME/miniconda" ]; then
+    echo "  Miniconda found at $HOME/miniconda, initializing..."
+    eval "$($HOME/miniconda/bin/conda shell.bash hook)"
+elif [ -d "/opt/conda" ]; then
+    echo "  Miniconda found at /opt/conda, initializing..."
+    eval "$(/opt/conda/bin/conda shell.bash hook)"
+elif ! command -v conda &> /dev/null; then
+    echo "  Installing Miniconda..."
     wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
     bash miniconda.sh -b -p $HOME/miniconda
     eval "$($HOME/miniconda/bin/conda shell.bash hook)"
