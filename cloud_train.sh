@@ -62,9 +62,9 @@ conda create -n lfsr python=3.10 -y 2>/dev/null || true
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate lfsr
 
-# Install PyTorch with CUDA 12.4 (compatible with 12.8) - VERBOSE
-echo "  Downloading PyTorch (~1.3GB)..."
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# Install PyTorch NIGHTLY with CUDA 12.8 for RTX 5090 (Blackwell sm_120)
+echo "  Downloading PyTorch Nightly (~1.5GB) for RTX 5090 support..."
+pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128
 
 # Install mamba-ssm (REQUIRED) - VERBOSE
 echo "  Installing mamba-ssm (compiling CUDA kernels)..."
@@ -152,6 +152,13 @@ else
     python Generate_Data_for_Test.py --angRes 5 --scale_factor 4
 fi
 
+# CRITICAL FIX: Create symlink because Generate_Data_for_Training.py uses 'data_for_train'
+# but option.py/train.py expects 'data_for_training'
+if [ -d "data_for_train" ] && [ ! -d "data_for_training" ]; then
+    echo "  Creating symlink: data_for_training -> data_for_train"
+    ln -s data_for_train data_for_training
+fi
+
 echo "✓ Training patches generated"
 
 # ============================================================================
@@ -211,7 +218,8 @@ python train.py \
     --lr 2e-4 \
     --epoch 80 \
     --device cuda:0 \
-    --num_workers 8
+    --num_workers 8 \
+    --path_for_train ./data_for_train/
 
 echo "✓ Training complete"
 
