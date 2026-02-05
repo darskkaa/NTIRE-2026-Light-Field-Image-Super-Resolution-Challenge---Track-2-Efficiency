@@ -904,7 +904,12 @@ if __name__ == '__main__':
     print("   • 150 Epoch Training (extended convergence)")
     print("   • Strict Mamba Enforcement (NO FALLBACK)")
     
-    model = get_model(Args())
+    # Setup device (Mamba requires CUDA)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device.type == 'cpu':
+        print("⚠️  WARNING: Running on CPU. Mamba MAY FAIL if kernels are compiled for CUDA only.")
+    
+    model = get_model(Args()).to(device)
     model.apply(weights_init)
     params = count_parameters(model)
     
@@ -918,9 +923,9 @@ if __name__ == '__main__':
     print(f"   Param Check: {'✅ PASS' if params < 1_000_000 else '❌ FAIL'}")
     
     # Forward test
-    x = torch.randn(1, 1, 160, 160)
+    x = torch.randn(1, 1, 160, 160).to(device)
     print(f"\n🧪 Forward Test:")
-    print(f"   Input: {x.shape}")
+    print(f"   Input: {x.shape} on {device}")
     
     model.eval()
     with torch.no_grad():
@@ -942,8 +947,8 @@ if __name__ == '__main__':
     
     # Loss test
     print(f"\n📉 Loss Test:")
-    criterion = get_loss(Args())
-    hr = torch.randn(1, 1, 640, 640)
+    criterion = get_loss(Args()).to(device)
+    hr = torch.randn(1, 1, 640, 640).to(device)
     loss_val = criterion(out.detach(), hr)
     print(f"   Loss value: {loss_val.item():.4f}")
     print(f"   ✅ Loss PASS")
