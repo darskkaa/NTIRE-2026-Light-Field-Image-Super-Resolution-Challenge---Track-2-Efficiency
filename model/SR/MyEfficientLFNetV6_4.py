@@ -798,3 +798,17 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print("🏆 V6.4 Maximum Quality Ready for Training!")
     print("=" * 70)
+
+
+# ============================================================================
+# WEIGHTS INITIALIZATION (Required by train.py)
+# ============================================================================
+def weights_init(m: nn.Module) -> None:
+    """Kaiming initialization for model weights."""
+    if isinstance(m, (nn.Conv2d, nn.Conv1d, nn.Linear)):
+        nn.init.kaiming_normal_(m.weight, a=0.1, mode='fan_in', nonlinearity='leaky_relu')
+        if hasattr(m, 'bias') and m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.LayerNorm):
+        nn.init.ones_(m.weight)
+        nn.init.zeros_(m.bias)
