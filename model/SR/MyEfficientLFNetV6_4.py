@@ -707,7 +707,7 @@ class get_loss(nn.Module):
         
         return F.l1_loss(pred_h_diff, target_h_diff)
     
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, pred: torch.Tensor, target: torch.Tensor, data_info=None) -> torch.Tensor:
         loss = self.charbonnier_loss(pred, target)
         loss = loss + self.fft_weight * self.fft_loss(pred, target)
         loss = loss + self.grad_weight * self.gradient_variance_loss(pred, target)
