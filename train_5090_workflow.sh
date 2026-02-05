@@ -1,6 +1,6 @@
 #!/bin/bash
 #===============================================================================
-# RTX 5090 TRAINING WORKFLOW - MyEfficientLFNetV6_2
+# RTX 5090 TRAINING WORKFLOW - MyEfficientLFNetV6_4
 # NTIRE 2026 Track 2 Efficiency Challenge
 #===============================================================================
 
@@ -22,7 +22,7 @@ header() { echo -e "\n${BOLD}${CYAN}============================================
 
 set -e  # Exit on error
 
-header "🚀 MyEfficientLFNetV6_2 Training Workflow - RTX 5090"
+header "🚀 MyEfficientLFNetV6_4 Training Workflow - RTX 5090"
 info "Starting workflow..."
 
 #===============================================================================
@@ -72,7 +72,7 @@ success "Environment setup complete"
 #===============================================================================
 # STEP 2 & 3: DATASET PREPARATION (Smart Check)
 #===============================================================================
-header "� STEP 2 & 3: Dataset Preparation"
+header "📀 STEP 2 & 3: Dataset Preparation"
 
 mkdir -p datasets downloads
 
@@ -125,7 +125,7 @@ success "Dataset preparation complete"
 #===============================================================================
 # STEP 4: GENERATE PATCHES (Smart Check)
 #===============================================================================
-header "� STEP 4: Generate Training Patches"
+header "🧩 STEP 4: Generate Training Patches"
 
 mkdir -p data_for_training data_for_test
 
@@ -158,15 +158,15 @@ success "Patch generation complete"
 #===============================================================================
 header "🧪 STEP 5: Verify Model"
 
-info "Running MyEfficientLFNetV6_2 self-test..."
-if python model/SR/MyEfficientLFNetV6_2.py; then
+info "Running MyEfficientLFNetV6_4 self-test..."
+if python model/SR/MyEfficientLFNetV6_4.py; then
     success "Model self-test passed."
 else
     error "Model self-test failed!"
 fi
 
 info "Checking efficiency constraints..."
-if python check_efficiency.py --model_name MyEfficientLFNetV6_2; then
+if python check_efficiency.py --model_name MyEfficientLFNetV6_4; then
     success "Efficiency check passed."
 else
     error "Efficiency check failed! Check 'check_efficiency.py' output."
@@ -175,10 +175,10 @@ fi
 #===============================================================================
 # STEP 6: TRAINING
 #===============================================================================
-header "🏋️ STEP 6: Training MyEfficientLFNetV6_2"
+header "🏋️ STEP 6: Training MyEfficientLFNetV6_4"
 
 # Check if checkpoint exists
-LAST_CKPT=$(ls -t log/SR_5x5_4x/ALL/MyEfficientLFNetV6_2/checkpoints/*.pth 2>/dev/null | head -1)
+LAST_CKPT=$(ls -t log/SR_5x5_4x/ALL/MyEfficientLFNetV6_4/checkpoints/*.pth 2>/dev/null | head -1)
 
 if [ -n "$LAST_CKPT" ]; then
     warn "Found existing checkpoint: $LAST_CKPT"
@@ -186,18 +186,18 @@ if [ -n "$LAST_CKPT" ]; then
     echo ""
     if [[ $REPLY =~ ^[Nn]$ ]]; then
         info "Starting FRESH training..."
-        python train.py --model_name MyEfficientLFNetV6_2 --angRes 5 --scale_factor 4 --batch_size 8 --lr 2e-4 --epoch 150 --path_for_train ./data_for_training/ --path_for_test ./data_for_test/ --device cuda:0 --num_workers 8
+        python train.py --model_name MyEfficientLFNetV6_4 --angRes 5 --scale_factor 4 --batch_size 8 --lr 2e-4 --epoch 150 --path_for_train ./data_for_training/ --path_for_test ./data_for_test/ --device cuda:0 --num_workers 8
     else
         info "Resuming training (script logic needed for auto-resume, defaulting to train.py)..."
         # Note: BasicLFSR train.py usually needs --resume or loads latest if configured. 
         # Assuming standard run continues or overwrites depending on impl. 
         # For safety, we restart unless user manually flags resume in code.
         # But we'll just run output logger adds to existing.
-        python train.py --model_name MyEfficientLFNetV6_2 --angRes 5 --scale_factor 4 --batch_size 8 --lr 2e-4 --epoch 150 --path_for_train ./data_for_training/ --path_for_test ./data_for_test/ --device cuda:0 --num_workers 8
+        python train.py --model_name MyEfficientLFNetV6_4 --angRes 5 --scale_factor 4 --batch_size 8 --lr 2e-4 --epoch 150 --path_for_train ./data_for_training/ --path_for_test ./data_for_test/ --device cuda:0 --num_workers 8
     fi
 else
     info "Starting training (150 epochs)..."
-    python train.py --model_name MyEfficientLFNetV6_2 --angRes 5 --scale_factor 4 --batch_size 8 --lr 2e-4 --epoch 150 --path_for_train ./data_for_training/ --path_for_test ./data_for_test/ --device cuda:0 --num_workers 8
+    python train.py --model_name MyEfficientLFNetV6_4 --angRes 5 --scale_factor 4 --batch_size 8 --lr 2e-4 --epoch 150 --path_for_train ./data_for_training/ --path_for_test ./data_for_test/ --device cuda:0 --num_workers 8
 fi
 
 success "Training complete"
@@ -207,11 +207,11 @@ success "Training complete"
 #===============================================================================
 header "📊 STEP 7: Inference and Evaluation"
 
-BEST_CKPT=$(ls -t log/SR_5x5_4x/ALL/MyEfficientLFNetV6_2/checkpoints/*.pth | head -1)
+BEST_CKPT=$(ls -t log/SR_5x5_4x/ALL/MyEfficientLFNetV6_4/checkpoints/*.pth | head -1)
 info "Using best checkpoint: $BEST_CKPT"
 
 info "Running inference..."
-python inference.py --model_name MyEfficientLFNetV6_2 --angRes 5 --scale_factor 4 --use_pre_ckpt True --path_pre_pth "$BEST_CKPT" --path_for_test ./data_for_test/ --data_name ALL
+python inference.py --model_name MyEfficientLFNetV6_4 --angRes 5 --scale_factor 4 --use_pre_ckpt True --path_pre_pth "$BEST_CKPT" --path_for_test ./data_for_test/ --data_name ALL
 
 success "Inference complete"
 
@@ -227,4 +227,4 @@ info "Validating submission..."
 python validate_submission.py
 
 header "🏆 TRAINING WORKFLOW COMPLETE!"
-success "Results available in log/SR_5x5_4x/ALL/MyEfficientLFNetV6_2/"
+success "Results available in log/SR_5x5_4x/ALL/MyEfficientLFNetV6_4/"
