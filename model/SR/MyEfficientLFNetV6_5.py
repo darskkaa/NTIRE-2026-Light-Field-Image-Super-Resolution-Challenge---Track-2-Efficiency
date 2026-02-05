@@ -488,20 +488,35 @@ class AdaptiveSpectralAttentionV64(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         
+        # FFT with numerical stability guards
         x_fft = torch.fft.rfft2(x, norm='ortho')
         magnitude = torch.abs(x_fft)
-        phase = torch.angle(x_fft)
+        
+        # Prevent NaN from angle of zero-magnitude values
+        eps = 1e-8
+        safe_fft = x_fft + eps * (magnitude < eps).float() * torch.sign(x_fft.real + eps)
+        phase = torch.angle(safe_fft)
+        
+        # Clamp phase to prevent extreme values
+        phase = torch.clamp(phase, -math.pi, math.pi)
         
         H_fft, W_fft = magnitude.shape[2], magnitude.shape[3]
         mag_flat = magnitude.view(B, C, -1)
         
         freq_weights = self.freq_gate(self.freq_conv(mag_flat))
         freq_weights = freq_weights.view(B, C, H_fft, W_fft)
+        
+        # Clamp weights to prevent explosion
+        freq_weights = torch.clamp(freq_weights, -1.0, 1.0)
         mag_weighted = magnitude * (1.0 + freq_weights)
         
         x_fft_weighted = mag_weighted * torch.exp(1j * phase)
         x_enhanced = torch.fft.irfft2(x_fft_weighted, s=(H, W), norm='ortho')
         x_enhanced = self.spatial_mix(x_enhanced)
+        
+        # NaN safety: if enhancement produces NaN, return identity
+        if torch.isnan(x_enhanced).any():
+            return x
         
         return x + self.scale * x_enhanced
 
