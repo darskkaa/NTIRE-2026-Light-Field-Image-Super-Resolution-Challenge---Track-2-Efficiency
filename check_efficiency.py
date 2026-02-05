@@ -165,11 +165,19 @@ def main():
     print(f"Input shape: {list(input_tensor.shape)}")
     print(f"  (SAI format: [B=1, C=1, H={angRes}x{H}={angRes*H}, W={angRes}x{W}={angRes*W}])")
     
-    # Count FLOPs
-    flops = count_flops_fvcore(model, input_tensor)
+    # Count FLOPs - try fvcore first, fallback to GPU hook-based counting
+    flops = None
+    try:
+        flops = count_flops_fvcore(model, input_tensor)
+    except Exception as e:
+        print(f"\n⚠️ fvcore failed (likely Mamba CUDA-only ops): {str(e)[:80]}...")
     
     if flops is None:
-        print("\nUsing manual FLOPs counting (fallback)...")
+        print("\nUsing GPU hook-based FLOPs counting (Mamba-compatible)...")
+        # Move to CUDA for hook-based counting (Mamba requires CUDA)
+        if torch.cuda.is_available():
+            model = model.cuda()
+            input_tensor = input_tensor.cuda()
         flops = count_flops_manual(model, input_tensor)
     
     flops_g = flops / 1e9
