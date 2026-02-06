@@ -305,7 +305,9 @@ class InitialFeatureExtraction(nn.Module):
         # Multi-scale parallel branches
         self.conv_3x3 = nn.Conv2d(1, channels // 3, 3, padding=1, bias=True)
         self.conv_5x5 = nn.Conv2d(1, channels // 3, 5, padding=2, groups=1, bias=True)
-        self.conv_7x7 = nn.Conv2d(1, channels - 2 * (channels // 3), 7, padding=3, groups=1, bias=True)
+        # Depthwise-separable 7x7 for efficiency (saves ~0.25G FLOPs)
+        self.conv_7x7_dw = nn.Conv2d(1, 1, 7, padding=3, groups=1, bias=False)
+        self.conv_7x7_pw = nn.Conv2d(1, channels - 2 * (channels // 3), 1, bias=True)
         
         # Fusion and enhancement
         self.fusion = nn.Conv2d(channels, channels, 1, bias=False)
@@ -319,7 +321,7 @@ class InitialFeatureExtraction(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         f3 = self.conv_3x3(x)
         f5 = self.conv_5x5(x)
-        f7 = self.conv_7x7(x)
+        f7 = self.conv_7x7_pw(self.conv_7x7_dw(x))
         
         fused = self.fusion(torch.cat([f3, f5, f7], dim=1))
         enhanced = self.enhance(fused)
@@ -688,7 +690,7 @@ class HRLFReconstruction(nn.Module):
     def __init__(self, channels: int, scale: int):
         super(HRLFReconstruction, self).__init__()
         
-        # 4-layer refinement
+        # 3-layer refinement (reduced from 4 to save ~0.2G FLOPs)
         self.refine = nn.Sequential(
             # Layer 1
             nn.Conv2d(channels, channels, 3, padding=1, groups=channels, bias=False),
@@ -699,10 +701,6 @@ class HRLFReconstruction(nn.Module):
             nn.Conv2d(channels, channels, 1, bias=False),
             nn.LeakyReLU(0.1, inplace=True),
             # Layer 3
-            nn.Conv2d(channels, channels, 3, padding=1, groups=channels, bias=False),
-            nn.Conv2d(channels, channels, 1, bias=False),
-            nn.LeakyReLU(0.1, inplace=True),
-            # Layer 4
             nn.Conv2d(channels, channels, 3, padding=1, groups=channels, bias=False),
             nn.Conv2d(channels, channels, 1, bias=False),
         )
@@ -775,20 +773,20 @@ class MultiScaleConv3Block(nn.Module):
 class LightweightSpatialAttention(nn.Module):
     def __init__(self, channels: int):
         super(LightweightSpatialAttention, self).__init__()
+        # Reduced to 2 dilations for efficiency (saves ~0.15G FLOPs)
         self.dw_d1 = nn.Conv2d(channels, channels, 3, padding=1, dilation=1, groups=channels, bias=False)
-        self.dw_d2 = nn.Conv2d(channels, channels, 3, padding=2, dilation=2, groups=channels, bias=False)
-        self.dw_d4 = nn.Conv2d(channels, channels, 3, padding=4, dilation=4, groups=channels, bias=False)
+        self.dw_d3 = nn.Conv2d(channels, channels, 3, padding=3, dilation=3, groups=channels, bias=False)
         self.gate = nn.Sequential(
-            nn.Conv2d(channels * 3, channels, 1, bias=False),
+            nn.Conv2d(channels * 2, channels, 1, bias=False),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Conv2d(channels, channels, 1, bias=True),
             nn.Sigmoid()
         )
-        self.proj = nn.Conv2d(channels * 3, channels, 1, bias=False)
+        self.proj = nn.Conv2d(channels * 2, channels, 1, bias=False)
         self.scale = nn.Parameter(torch.ones(1) * 0.2)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        multi = torch.cat([self.dw_d1(x), self.dw_d2(x), self.dw_d4(x)], dim=1)
+        multi = torch.cat([self.dw_d1(x), self.dw_d3(x)], dim=1)
         return x + self.scale * self.proj(multi) * self.gate(multi)
 
 
