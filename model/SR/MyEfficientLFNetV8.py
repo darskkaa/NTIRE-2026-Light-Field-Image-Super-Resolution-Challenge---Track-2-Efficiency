@@ -128,8 +128,7 @@ class get_model(nn.Module):
         # ================================================================
         self.progressive_fusion = ProgressiveStagedFusionV2(self.channels, self.n_blocks)
         
-        # Spectral-Spatial-Angular Attention
-        self.spectral_attn = SpectralSpatialAngularAttention(self.channels)
+        # NOTE: SpectralSpatialAngularAttention removed to meet 20G FLOPs budget
         
         # ================================================================
         # MODULE 5: HR LF Reconstruction (HLFR) - Deep Head
@@ -202,9 +201,8 @@ class get_model(nn.Module):
         # Module 4: Progressive fusion
         staged_feat = self.progressive_fusion(block_outputs)
         
-        # Spectral-angular attention
+        # Combine features (spectral attention removed for FLOPs budget)
         combined = feat_lf + staged_feat + shallow
-        combined = self.spectral_attn(combined)
         
         # Module 5: HLFR
         out = self.hlfr(combined)
