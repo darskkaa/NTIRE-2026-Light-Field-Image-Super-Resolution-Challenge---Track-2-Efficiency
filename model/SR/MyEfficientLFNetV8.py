@@ -89,19 +89,30 @@ class get_model(nn.Module):
         
         # ================================================================
         # MODULE 2: Spatial-Angular Feature Learning (SAFL)
-        # 12 blocks with window attention inserted after block 6
+        # 12 blocks with HAT-inspired attention at 33% and 75% depth
         # ================================================================
+        # Early phase: 4 blocks (0-3)
         self.safl_blocks_early = nn.ModuleList([
             LFVSSMBlockV8(self.channels, self.d_state, self.d_conv, self.expand, dropout=0.1)
-            for _ in range(6)
+            for _ in range(4)
         ])
         
-        # Window attention for global context (after block 6)
+        # Window attention at ~33% depth (after block 4, HAT-aligned)
         self.window_attention = EfficientWindowAttention(self.channels, num_heads=4, window_size=8)
         
+        # Mid phase: 5 blocks (4-8)
+        self.safl_blocks_mid = nn.ModuleList([
+            LFVSSMBlockV8(self.channels, self.d_state, self.d_conv, self.expand, dropout=0.1)
+            for _ in range(5)
+        ])
+        
+        # Window attention at ~75% depth (after block 9, HAT-aligned)
+        self.window_attention_2 = EfficientWindowAttention(self.channels, num_heads=4, window_size=8)
+        
+        # Late phase: 3 blocks (9-11)
         self.safl_blocks_late = nn.ModuleList([
             LFVSSMBlockV8(self.channels, self.d_state, self.d_conv, self.expand, dropout=0.1)
-            for _ in range(6)
+            for _ in range(3)
         ])
         
         # Lightweight spatial attention
@@ -157,19 +168,27 @@ class get_model(nn.Module):
         # Module 1: IFE
         shallow = self.ife(x_proc)
         
-        # Module 2: SAFL (12 blocks with window attention)
+        # Module 2: SAFL (12 blocks with HAT-aligned attention)
         feat = shallow
         block_outputs = []
         
-        # Early blocks (0-5)
+        # Early phase: blocks 0-3
         for block in self.safl_blocks_early:
             feat = block(feat)
             block_outputs.append(feat)
         
-        # Window attention for global context
+        # Window attention at 33% depth
         feat = self.window_attention(feat)
         
-        # Late blocks (6-11)
+        # Mid phase: blocks 4-8
+        for block in self.safl_blocks_mid:
+            feat = block(feat)
+            block_outputs.append(feat)
+        
+        # Window attention at 75% depth
+        feat = self.window_attention_2(feat)
+        
+        # Late phase: blocks 9-11
         for block in self.safl_blocks_late:
             feat = block(feat)
             block_outputs.append(feat)
@@ -242,7 +261,7 @@ class get_model(nn.Module):
             self.mask_ratio = 0.10
     
     def _init_weights(self):
-        """Kaiming initialization for all layers."""
+        """Kaiming initialization + depth-aware residual scaling."""
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Conv1d, nn.ConvTranspose2d)):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
@@ -255,6 +274,25 @@ class get_model(nn.Module):
             elif isinstance(m, nn.LayerNorm):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
+        
+        # Depth-aware geometric scaling (HAT/SwinIR research)
+        # Earlier layers: smaller contribution, later layers: larger
+        with torch.no_grad():
+            # Early phase: 0.15 → 0.225 (4 blocks)
+            for i, block in enumerate(self.safl_blocks_early):
+                block.res_scale.fill_(0.15 + 0.025 * i)
+            
+            # Mid phase: 0.25 → 0.35 (5 blocks)
+            for i, block in enumerate(self.safl_blocks_mid):
+                block.res_scale.fill_(0.25 + 0.02 * i)
+            
+            # Late phase: 0.35 → 0.425 (3 blocks)
+            for i, block in enumerate(self.safl_blocks_late):
+                block.res_scale.fill_(0.35 + 0.025 * i)
+            
+            # Attention layers: early attention smaller, late attention larger
+            self.window_attention.attn_scale.fill_(0.15)
+            self.window_attention_2.attn_scale.fill_(0.25)
 
 
 # ============================================================================
@@ -303,7 +341,7 @@ class LFVSSMBlockV8(nn.Module):
         
         self.pre_norm = nn.LayerNorm(channels)
         self.local_branch = MultiScaleConv3Block(channels)
-        self.global_branch = EfficientCrossScanSS2D(channels, d_state, d_conv, expand)
+        self.global_branch = EfficientCrossScanSS2D(channels, d_state, d_conv, expand, angRes=5)
         self.fuse = nn.Conv2d(channels * 2, channels, 1, bias=False)
         self.attention = EfficientChannelAttention(channels, reduction=8)
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
@@ -333,12 +371,13 @@ class LFVSSMBlockV8(nn.Module):
 # EFFICIENT CROSS-SCAN SS2D
 # ============================================================================
 class EfficientCrossScanSS2D(nn.Module):
-    """4-way cross-scan via channel grouping."""
+    """4-way cross-scan with angular-aware MacPI scanning (LFMamba-inspired)."""
     
-    def __init__(self, channels: int, d_state: int = 24, d_conv: int = 4, expand: float = 1.25):
+    def __init__(self, channels: int, d_state: int = 24, d_conv: int = 4, expand: float = 1.25, angRes: int = 5):
         super(EfficientCrossScanSS2D, self).__init__()
         
         self.channels = channels
+        self.angRes = angRes
         self.group_size = channels // 4
         self.norm = nn.LayerNorm(channels)
         
@@ -351,8 +390,12 @@ class EfficientCrossScanSS2D(nn.Module):
         
         self.fusion = nn.Conv2d(channels, channels, 1, bias=False)
         self.scale = nn.Parameter(torch.ones(1) * 0.15)
+        # Angular blending weight (sigmoid-bounded for training stability)
+        self.angular_weight_raw = nn.Parameter(torch.zeros(1))  # sigmoid(0) = 0.5
+        self.use_angular_scan = True  # Efficiency toggle
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _spatial_scan(self, x: torch.Tensor) -> torch.Tensor:
+        """4-way spatial scanning."""
         B, C, H, W = x.shape
         g = self.group_size
         
@@ -374,9 +417,38 @@ class EfficientCrossScanSS2D(nn.Module):
         r2 = o2.view(B, g, W, H).permute(0, 1, 3, 2)
         r3 = o3.flip(-1).view(B, g, W, H).permute(0, 1, 3, 2)
         
-        out = torch.cat([r0, r1, r2, r3], dim=1)
-        out = self.fusion(out)
+        return torch.cat([r0, r1, r2, r3], dim=1)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        angRes = self.angRes
         
+        # Spatial-domain scanning (original 4-way)
+        spatial_feat = self._spatial_scan(x)
+        
+        # Angular-domain scanning (MacPI) for LF-specific 4D structure
+        if self.use_angular_scan and H % angRes == 0 and W % angRes == 0:
+            h, w = H // angRes, W // angRes
+            # SAI -> MacPI conversion
+            x_macpi = x.view(B, C, angRes, h, angRes, w)
+            x_macpi = x_macpi.permute(0, 1, 3, 2, 5, 4).contiguous()
+            x_macpi = x_macpi.view(B, C, h * angRes, w * angRes)
+            
+            # Scan in MacPI domain
+            angular_feat = self._spatial_scan(x_macpi)
+            
+            # MacPI -> SAI conversion
+            angular_feat = angular_feat.view(B, C, h, angRes, w, angRes)
+            angular_feat = angular_feat.permute(0, 1, 3, 2, 5, 4).contiguous()
+            angular_feat = angular_feat.view(B, C, H, W)
+            
+            # Blend spatial and angular features (sigmoid-bounded weight: 0-0.5 range)
+            angular_weight = 0.5 * torch.sigmoid(self.angular_weight_raw)
+            out = spatial_feat + angular_weight * angular_feat
+        else:
+            out = spatial_feat
+        
+        out = self.fusion(out)
         return x + self.scale * out
 
 
@@ -776,8 +848,8 @@ class get_loss(nn.Module):
         super(get_loss, self).__init__()
         self.eps = getattr(args, 'charbonnier_eps', 1e-9)  # Tighter
         self.fft_weight = getattr(args, 'fft_weight', 0.1)
-        self.ssim_weight = getattr(args, 'ssim_weight', 0.1)  # NEW
-        self.grad_weight = getattr(args, 'grad_weight', 0.02)
+        self.ssim_weight = getattr(args, 'ssim_weight', 0.05)  # Reduced from 0.1 for PSNR focus
+        self.grad_weight = getattr(args, 'grad_weight', 0.03)  # Increased from 0.02 for edge preservation
         self.edge_weight = getattr(args, 'edge_weight', 0.01)
         self.angular_weight = getattr(args, 'angular_weight', 0.02)
         self.angRes = getattr(args, 'angRes_in', 5)
