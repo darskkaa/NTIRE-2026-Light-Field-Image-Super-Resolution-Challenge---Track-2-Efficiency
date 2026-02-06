@@ -707,12 +707,12 @@ class HRLFReconstruction(nn.Module):
             nn.Conv2d(channels, channels, 1, bias=False),
         )
         
-        # Edge-aware attention
+        # Edge-aware attention (reduced hidden for efficiency)
         self.edge_attn = nn.Sequential(
             nn.Conv2d(channels, channels, 3, padding=1, groups=channels, bias=False),
-            nn.Conv2d(channels, channels // 4, 1, bias=False),
+            nn.Conv2d(channels, channels // 8, 1, bias=False),
             nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(channels // 4, channels, 1, bias=False),
+            nn.Conv2d(channels // 8, channels, 1, bias=False),
             nn.Sigmoid()
         )
         
