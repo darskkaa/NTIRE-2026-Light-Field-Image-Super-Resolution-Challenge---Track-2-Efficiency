@@ -392,7 +392,8 @@ class EfficientCrossScanSS2D(nn.Module):
         self.scale = nn.Parameter(torch.ones(1) * 0.15)
         # Angular blending weight (sigmoid-bounded for training stability)
         self.angular_weight_raw = nn.Parameter(torch.zeros(1))  # sigmoid(0) = 0.5
-        self.use_angular_scan = True  # Efficiency toggle
+        # Disabled by default to meet 20G FLOPs constraint (saves ~5G)
+        self.use_angular_scan = False
     
     def _spatial_scan(self, x: torch.Tensor) -> torch.Tensor:
         """4-way spatial scanning."""
