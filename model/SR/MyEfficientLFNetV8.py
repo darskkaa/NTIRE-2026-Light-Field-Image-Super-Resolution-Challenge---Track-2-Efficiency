@@ -304,7 +304,9 @@ class InitialFeatureExtraction(nn.Module):
         
         # Multi-scale parallel branches
         self.conv_3x3 = nn.Conv2d(1, channels // 3, 3, padding=1, bias=True)
-        self.conv_5x5 = nn.Conv2d(1, channels // 3, 5, padding=2, groups=1, bias=True)
+        # Depthwise-separable 5x5 for efficiency
+        self.conv_5x5_dw = nn.Conv2d(1, 1, 5, padding=2, groups=1, bias=False)
+        self.conv_5x5_pw = nn.Conv2d(1, channels // 3, 1, bias=True)
         # Depthwise-separable 7x7 for efficiency (saves ~0.25G FLOPs)
         self.conv_7x7_dw = nn.Conv2d(1, 1, 7, padding=3, groups=1, bias=False)
         self.conv_7x7_pw = nn.Conv2d(1, channels - 2 * (channels // 3), 1, bias=True)
@@ -320,7 +322,7 @@ class InitialFeatureExtraction(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         f3 = self.conv_3x3(x)
-        f5 = self.conv_5x5(x)
+        f5 = self.conv_5x5_pw(self.conv_5x5_dw(x))
         f7 = self.conv_7x7_pw(self.conv_7x7_dw(x))
         
         fused = self.fusion(torch.cat([f3, f5, f7], dim=1))
