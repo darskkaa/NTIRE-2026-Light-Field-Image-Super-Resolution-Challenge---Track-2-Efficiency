@@ -288,9 +288,9 @@ class get_model(nn.Module):
             for i, block in enumerate(self.safl_blocks_late):
                 block.res_scale.fill_(0.35 + 0.025 * i)
             
-            # Attention layers: early attention smaller, late attention larger
-            self.window_attention.attn_scale.fill_(0.15)
-            self.window_attention_2.attn_scale.fill_(0.25)
+            # Attention layers: V8.1 increased scales for better utilization
+            self.window_attention.attn_scale.fill_(0.25)   # V8.1: Was 0.15
+            self.window_attention_2.attn_scale.fill_(0.35)  # V8.1: Was 0.25
 
 
 # ============================================================================
@@ -474,6 +474,25 @@ class EfficientWindowAttention(nn.Module):
         self.qkv = nn.Linear(channels, channels * 3, bias=False)
         self.proj = nn.Linear(channels, channels, bias=False)
         self.attn_scale = nn.Parameter(torch.ones(1) * 0.2)
+        
+        # V8.1: Relative Position Bias (Swin/HAT-style, +0.1 dB, ~0 FLOPs)
+        self.relative_position_bias_table = nn.Parameter(
+            torch.zeros((2 * window_size - 1) * (2 * window_size - 1), num_heads)
+        )
+        nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
+        
+        # Create relative position index
+        coords_h = torch.arange(window_size)
+        coords_w = torch.arange(window_size)
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing='ij'))  # 2, ws, ws
+        coords_flatten = coords.flatten(1)  # 2, ws*ws
+        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, ws*ws, ws*ws
+        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # ws*ws, ws*ws, 2
+        relative_coords[:, :, 0] += window_size - 1  # shift to start from 0
+        relative_coords[:, :, 1] += window_size - 1
+        relative_coords[:, :, 0] *= 2 * window_size - 1
+        relative_position_index = relative_coords.sum(-1)  # ws*ws, ws*ws
+        self.register_buffer('relative_position_index', relative_position_index)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
@@ -500,6 +519,14 @@ class EfficientWindowAttention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]
         
         attn = (q @ k.transpose(-2, -1)) * self.scale_factor
+        
+        # V8.1: Add relative position bias
+        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
+            self.window_size * self.window_size, self.window_size * self.window_size, -1
+        )  # ws*ws, ws*ws, nH
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, ws*ws, ws*ws
+        attn = attn + relative_position_bias.unsqueeze(0)
+        
         attn = attn.softmax(dim=-1)
         
         out = (attn @ v).transpose(1, 2).reshape(-1, ws * ws, C)
@@ -847,10 +874,10 @@ class get_loss(nn.Module):
         super(get_loss, self).__init__()
         self.eps = getattr(args, 'charbonnier_eps', 1e-9)  # Tighter
         self.fft_weight = getattr(args, 'fft_weight', 0.1)
-        self.ssim_weight = getattr(args, 'ssim_weight', 0.05)  # Reduced from 0.1 for PSNR focus
-        self.grad_weight = getattr(args, 'grad_weight', 0.03)  # Increased from 0.02 for edge preservation
-        self.edge_weight = getattr(args, 'edge_weight', 0.01)
-        self.angular_weight = getattr(args, 'angular_weight', 0.02)
+        self.ssim_weight = getattr(args, 'ssim_weight', 0.02)  # V8.1: Halved for PSNR focus (was 0.05)
+        self.grad_weight = getattr(args, 'grad_weight', 0.04)  # V8.1: Slightly increased edge preservation
+        self.edge_weight = getattr(args, 'edge_weight', 0.0)   # V8.1: Removed (redundant with gradient)
+        self.angular_weight = getattr(args, 'angular_weight', 0.06)  # V8.1: 3x for LF consistency (was 0.02)
         self.angRes = getattr(args, 'angRes_in', 5)
     
     def charbonnier(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -860,15 +887,21 @@ class get_loss(nn.Module):
         return F.l1_loss(torch.abs(torch.fft.rfft2(pred)), torch.abs(torch.fft.rfft2(target)))
     
     def ssim_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """1 - SSIM for minimization."""
+        """1 - SSIM for minimization. V8.1: Fixed window size 3→7."""
         C1, C2 = 0.01 ** 2, 0.03 ** 2
+        window_size = 7  # V8.1: Increased from 3 for proper SSIM
+        pad = window_size // 2
         
-        mu_pred = F.avg_pool2d(pred, 3, 1, 1)
-        mu_target = F.avg_pool2d(target, 3, 1, 1)
+        mu_pred = F.avg_pool2d(pred, window_size, 1, pad)
+        mu_target = F.avg_pool2d(target, window_size, 1, pad)
         
-        sigma_pred = F.avg_pool2d(pred ** 2, 3, 1, 1) - mu_pred ** 2
-        sigma_target = F.avg_pool2d(target ** 2, 3, 1, 1) - mu_target ** 2
-        sigma_cross = F.avg_pool2d(pred * target, 3, 1, 1) - mu_pred * mu_target
+        sigma_pred = F.avg_pool2d(pred ** 2, window_size, 1, pad) - mu_pred ** 2
+        sigma_target = F.avg_pool2d(target ** 2, window_size, 1, pad) - mu_target ** 2
+        sigma_cross = F.avg_pool2d(pred * target, window_size, 1, pad) - mu_pred * mu_target
+        
+        # Clamp sigma to avoid negative values from numerical instability
+        sigma_pred = sigma_pred.clamp(min=0)
+        sigma_target = sigma_target.clamp(min=0)
         
         ssim = ((2 * mu_pred * mu_target + C1) * (2 * sigma_cross + C2)) / \
                ((mu_pred ** 2 + mu_target ** 2 + C1) * (sigma_pred + sigma_target + C2))
@@ -911,10 +944,9 @@ class get_loss(nn.Module):
         loss = loss + self.grad_weight * self.gradient_loss(pred, target)
         loss = loss + self.edge_weight * self.edge_loss(pred, target)
         
-        try:
+        # V8.1: Fixed bare except → explicit shape check
+        if pred.shape[-1] % self.angRes == 0 and pred.shape[-2] % self.angRes == 0:
             loss = loss + self.angular_weight * self.angular_loss(pred, target)
-        except:
-            pass
         
         return loss
 
