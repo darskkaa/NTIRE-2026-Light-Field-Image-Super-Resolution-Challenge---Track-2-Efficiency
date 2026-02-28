@@ -46,43 +46,59 @@ else
     pip install "transformers<4.45.0"
 fi
 
-# Full validation: mamba-ssm must import AND its CUDA kernels must load
-if python -c "from mamba_ssm.modules.mamba_simple import Mamba; import torch; assert 'sm_120' in torch.cuda.get_arch_list(); print('OK')" &> /dev/null; then
+# --- Pre-flight: clean stale CUDA .so files BEFORE the guard check ---
+# mamba-ssm/causal-conv1d install .so files at the site-packages root.
+# If these were compiled against a different PyTorch ABI, they cause
+# "undefined symbol" errors at import time. Remove them so the guard
+# check below doesn't get fooled by a broken-but-present install.
+SITE_PKGS=$(python -c "import site; print(site.getsitepackages()[0])")
+find "$SITE_PKGS" -maxdepth 1 -name "selective_scan_cuda*.so" -delete 2>/dev/null || true
+find "$SITE_PKGS" -maxdepth 1 -name "causal_conv1d_cuda*.so" -delete 2>/dev/null || true
+
+# Full validation: mamba-ssm must import AND its CUDA kernels must actually load
+if python -c "from mamba_ssm.ops.selective_scan_interface import selective_scan_fn; import torch; assert 'sm_120' in torch.cuda.get_arch_list(); print('OK')" &> /dev/null; then
     success "mamba-ssm is working and PyTorch supports sm_120! Skipping installation."
 else
     warn "Missing mamba-ssm, broken CUDA kernels, or PyTorch lacks sm_120 support. Installing..."
 
     # --- Remove ALL old packages to prevent ABI mismatch ---
-    info "Removing old PyTorch and mamba packages..."
-    pip uninstall -y torch torchvision torchaudio mamba-ssm causal-conv1d 2>/dev/null || true
-    # Remove stale CUDA .so files that mamba-ssm/causal-conv1d install at site-packages root
-    find /venv/lfsr/lib/ -name "selective_scan_cuda*.so" -delete 2>/dev/null || true
-    find /venv/lfsr/lib/ -name "causal_conv1d_cuda*.so" -delete 2>/dev/null || true
-    find /venv/lfsr/lib/ -name "mamba_ssm*.so" -delete 2>/dev/null || true
+    info "Removing old mamba packages (keeping PyTorch if sm_120-capable)..."
+    pip uninstall -y mamba-ssm causal-conv1d 2>/dev/null || true
+
+    # Check if current PyTorch already supports sm_120
+    if python -c "import torch; assert 'sm_120' in torch.cuda.get_arch_list()" &> /dev/null; then
+        success "Current PyTorch already supports sm_120, keeping it."
+    else
+        info "PyTorch lacks sm_120 support. Reinstalling nightly..."
+        pip uninstall -y torch torchvision torchaudio 2>/dev/null || true
+        pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+    fi
+
+    # Remove stale CUDA .so files from ALL possible locations
+    find "$SITE_PKGS" -name "selective_scan_cuda*.so" -delete 2>/dev/null || true
+    find "$SITE_PKGS" -name "causal_conv1d_cuda*.so" -delete 2>/dev/null || true
+    find "$SITE_PKGS" -name "mamba_ssm*.so" -delete 2>/dev/null || true
     # Purge pip's wheel cache to prevent reuse of ABI-incompatible cached wheels
     pip cache purge 2>/dev/null || true
-
-    info "Installing PyTorch nightly (cu128) for RTX 5090 Blackwell sm_120 support..."
-    pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
     # Verify PyTorch installed correctly
     python -c "import torch; print(f'PyTorch {torch.__version__}'); print(f'CUDA archs: {torch.cuda.get_arch_list()}')"
 
     # --- Build causal-conv1d and mamba-ssm from source ---
-    # CRITICAL: --no-cache-dir prevents pip from reusing cached wheels that
-    # were compiled against an older PyTorch ABI (causes "undefined symbol" at runtime).
-    # We also must bypass PyTorch's strict CUDA version check since nvcc is 13.0 and torch is 12.8.
-    # The safest way is to force the builder to use the CUDA tools pip installed with PyTorch.
-    export CUDA_HOME=$(python -c "import site; print(site.getsitepackages()[0] + '/nvidia/cuda_nvrtc')")
-    export NVCC_APPEND_FLAGS="-allow-unsupported-compiler"
+    # CRITICAL: --no-binary forces pip to compile from source instead of using
+    # pre-built wheels that were compiled against a different PyTorch ABI.
+    # --no-build-isolation ensures the build uses the venv's PyTorch.
+    # --no-cache-dir prevents reuse of cached incompatible wheels.
+    info "Installing build dependencies..."
+    pip install ninja packaging
 
     info "Building causal-conv1d from source (~5 min)..."
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
-        pip install causal-conv1d==1.4.0 --no-build-isolation --no-cache-dir
+        pip install causal-conv1d --no-binary causal-conv1d --no-build-isolation --no-cache-dir
 
     info "Building mamba-ssm from source (~10 min)..."
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
-        pip install mamba-ssm==2.2.2 --no-build-isolation --no-cache-dir
+        pip install mamba-ssm --no-binary mamba-ssm --no-build-isolation --no-cache-dir
 fi
 
 info "Installing other dependencies..."
@@ -90,15 +106,9 @@ pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplo
 
 success "All packages installed! This won't run again on future executions."
 
-# Verify einops (required for V10 rearranges)
-if ! python -c "import einops" &> /dev/null; then
-    info "Installing einops (required for V10 tensor rearranges)..."
-    pip install einops
-fi
-
 info "Verifying installations..."
 python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}')"
-python -c "from mamba_ssm.modules.mamba_simple import Mamba; print('mamba-ssm: OK')"
+python -c "from mamba_ssm.ops.selective_scan_interface import selective_scan_fn; print('mamba-ssm: OK')"
 python -c "from einops import rearrange; print('einops: OK')"
 success "Environment setup complete"
 
