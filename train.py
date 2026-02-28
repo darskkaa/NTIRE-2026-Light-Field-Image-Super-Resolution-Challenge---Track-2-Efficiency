@@ -96,7 +96,7 @@ def main(args):
         lr=args.lr,
         betas=(0.9, 0.999),
         eps=1e-08,
-        weight_decay=1e-4  # AdamW handles weight decay better
+        weight_decay=5e-3  # Vision Mamba recommends 1e-2; 5e-3 balances for our smaller model
     )
     
     ''' Learning Rate Scheduler - Cosine Annealing with Warmup (SOTA) '''
