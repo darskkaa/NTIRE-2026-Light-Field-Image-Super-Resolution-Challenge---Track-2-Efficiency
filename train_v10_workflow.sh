@@ -85,7 +85,7 @@ else
     fi
 
     info "Installing other dependencies..."
-    pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib
+    pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib gdown "transformers<4.45.0"
 
     success "All packages installed! This won't run again on future executions."
 fi
