@@ -45,7 +45,7 @@ def main(args):
             # load params
             net.load_state_dict(new_state_dict)
             print('Use pretrain model!')
-        except:
+        except (RuntimeError, KeyError):
             new_state_dict = OrderedDict()
             for k, v in checkpoint['state_dict'].items():
                 new_state_dict[k] = v

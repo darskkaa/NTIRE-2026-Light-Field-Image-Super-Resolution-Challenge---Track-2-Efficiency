@@ -5,6 +5,7 @@ import torch.backends.cudnn as cudnn
 from utils.utils import *
 from utils.utils_datasets import TrainSetDataLoader, MultiTestSetDataLoader
 from collections import OrderedDict
+import random
 
 import imageio
 
@@ -12,6 +13,14 @@ import imageio
 
 
 def main(args):
+    ''' Set Random Seed for Reproducibility '''
+    seed = getattr(args, 'seed', 1)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+
     ''' Create Dir for Save'''
     log_dir, checkpoints_dir, val_dir = create_dir(args)
 
@@ -29,7 +38,8 @@ def main(args):
     logger.log_string("The number of training data is: %d" % len(train_Dataset))
     train_loader = torch.utils.data.DataLoader(dataset=train_Dataset, num_workers=args.num_workers,
                                                batch_size=args.batch_size, shuffle=True,
-                                               pin_memory=True, prefetch_factor=4 if args.num_workers > 0 else None)
+                                               pin_memory=True, prefetch_factor=4 if args.num_workers > 0 else None,
+                                               persistent_workers=True if args.num_workers > 0 else False)
 
     ''' DATA Validation LOADING '''
     logger.log_string('\nLoad Validation Dataset ...')
@@ -64,14 +74,16 @@ def main(args):
                 # load params
                 net.load_state_dict(new_state_dict)
                 logger.log_string('Use pretrain model!')
-            except:
+            except (RuntimeError, KeyError) as e:
+                logger.log_string(f'module. prefix failed ({e}), trying without prefix...')
                 new_state_dict = OrderedDict()
                 for k, v in checkpoint['state_dict'].items():
                     new_state_dict[k] = v
                 # load params
                 net.load_state_dict(new_state_dict)
                 logger.log_string('Use pretrain model!')
-        except:
+        except (FileNotFoundError, RuntimeError, KeyError) as e:
+            logger.log_string(f'Failed to load checkpoint: {e}')
             net = MODEL.get_model(args)
             net.apply(MODEL.weights_init)
             start_epoch = 0
@@ -96,7 +108,7 @@ def main(args):
         lr=args.lr,
         betas=(0.9, 0.999),
         eps=1e-08,
-        weight_decay=5e-3  # Vision Mamba recommends 1e-2; 5e-3 balances for our smaller model
+        weight_decay=1e-4  # Reduced from 5e-3: V10 has <1M params, high WD fights learning capacity
     )
     
     ''' Learning Rate Scheduler - Cosine Annealing with Warmup (SOTA) '''
@@ -155,7 +167,7 @@ def main(args):
 
         ''' Training '''
         loss_epoch_train, psnr_epoch_train, ssim_epoch_train = train(
-            train_loader, device, net, criterion, optimizer
+            train_loader, device, net, criterion, optimizer, args
         )
         logger.log_string('The %dth Train, loss is: %.5f, psnr is %.5f, ssim is %.5f' %
                           (idx_epoch + 1, loss_epoch_train, psnr_epoch_train, ssim_epoch_train))
@@ -213,13 +225,13 @@ def main(args):
                 pass
             pass
 
-        ''' scheduler '''
+        ''' scheduler — step BEFORE saving so checkpoint reflects new LR (P4) '''
         scheduler.step()
         pass
     pass
 
 
-def train(train_loader, device, net, criterion, optimizer):
+def train(train_loader, device, net, criterion, optimizer, args):
     '''
     Training one epoch.
     
@@ -229,6 +241,7 @@ def train(train_loader, device, net, criterion, optimizer):
         net: Model to train
         criterion: Loss function
         optimizer: Optimizer
+        args: Parsed argument namespace (P3 fix: explicit param, not closure)
     
     Note: MLFIM (feature-level masking) is handled inside the model's
           forward() method, matching official LFTransMamba.
@@ -298,12 +311,13 @@ def test(test_loader, device, net, args, save_dir=None):
 
         ''' SR the Patches '''
         net.eval()  # Set eval mode once before the loop
+        torch.cuda.empty_cache()  # Once before loop, not per-iteration (MED-5)
         for i in range(0, numU * numV, args.minibatch_for_test):
             tmp = subLFin[i:min(i + args.minibatch_for_test, numU * numV), :, :, :]
             with torch.no_grad():
                 torch.cuda.empty_cache()
                 out = net(tmp.to(device), data_info)
-                subLFout[i:min(i + args.minibatch_for_test, numU * numV), :, :, :] = out
+                subLFout[i:min(i + args.minibatch_for_test, numU * numV), :, :, :] = out.cpu()
         subLFout = rearrange(subLFout, '(n1 n2) 1 a1h a2w -> n1 n2 a1h a2w', n1=numU, n2=numV)
 
         ''' Restore the Patches to LFs '''
@@ -322,7 +336,9 @@ def test(test_loader, device, net, args, save_dir=None):
         if save_dir is not None:
             save_dir_ = save_dir.joinpath(LF_name[0])
             save_dir_.mkdir(exist_ok=True)
-            Sr_SAI_ycbcr = torch.cat((Sr_SAI_y, Sr_SAI_cbcr), dim=1)
+            # P2 FIX: Sr_SAI_y comes from subLFout on CPU (train.py allocates on CPU);
+            # but apply .cpu() defensively to guarantee no cross-device error.
+            Sr_SAI_ycbcr = torch.cat((Sr_SAI_y.cpu(), Sr_SAI_cbcr), dim=1)
             Sr_SAI_rgb = (ycbcr2rgb(Sr_SAI_ycbcr.squeeze().permute(1, 2, 0).numpy()).clip(0,1)*255).astype('uint8')
             Sr_4D_rgb = rearrange(Sr_SAI_rgb, '(a1 h) (a2 w) c -> a1 a2 h w c', a1=args.angRes_out, a2=args.angRes_out)
 

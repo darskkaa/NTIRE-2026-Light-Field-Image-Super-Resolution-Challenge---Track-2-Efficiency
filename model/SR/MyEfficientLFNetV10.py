@@ -97,7 +97,9 @@ class get_model(nn.Module):
         # Learned mask token replaces masked spatial positions in feature space
         # Reference: LFTransMamba (CVPRW 2025, 1st NTIRE 2025)
         # Applied AFTER IFE, on feature maps — NOT on raw input pixels
-        self.mlfim_mask_ratio = 0.25  # LFTransMamba official default (25%)
+        # NOTE: Default 0.0 (disabled) — MLFIM was designed for pre-training,
+        # not end-to-end regularization. Enable via args for ablation.
+        self.mlfim_mask_ratio = getattr(args, 'mlfim_mask_ratio', 0.0)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, C), requires_grad=True)
 
         # ---- MODULE 1: 3D Conv IFE (LFMamba-proven) -----------------------
@@ -163,12 +165,6 @@ class get_model(nn.Module):
         sr_y = LF_interpolate(x_6d, scale_factor=self.scale, mode='bicubic')
         sr_y = rearrange(sr_y, 'b c u v h w -> b c (u h) (v w)')
 
-        # ---- Set h, w for all submodules that need it ---------------------
-        h = H // angRes
-        w = W // angRes
-        for m in self.modules():
-            m.h = h
-            m.w = w
 
         # ---- MODULE 1: 3D Conv IFE ---------------------------------------
         # Reshape to 5D: (B, 1, U*V, h, w)
@@ -181,7 +177,7 @@ class get_model(nn.Module):
         # Masks random spatial tokens and replaces with learned mask_token.
         # Applied AFTER IFE so features are meaningful; zero inference cost.
         # Reference: LFTransMamba random_masking() — official implementation
-        if self.training:
+        if self.training and self.mlfim_mask_ratio > 0:
             B_m, C_m, A_m, h_m, w_m = buffer_init.shape
             feat_seq = rearrange(buffer_init,
                                 'b c (u v) h w -> (b u v) (h w) c',
@@ -932,6 +928,10 @@ class get_loss(nn.Module):
         )
 
     def forward(self, pred, target, data_info=None):
+        # P7: Cast once at entry — avoids repeated .float() calls inside each sub-loss
+        # while inside torch.amp.autocast. bfloat16 underflows on squared terms (SSIM)
+        # and eps^2=1e-18 (Charbonnier), so float32 is required throughout.
+        pred, target = pred.float(), target.float()
         loss = self.charbonnier(pred, target)
         loss = loss + self.fft_w    * self.fft_loss(pred, target)
         loss = loss + self.ssim_w   * self.ssim_loss(pred, target)

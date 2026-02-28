@@ -85,7 +85,6 @@ def main(args):
                         with h5py.File(file_name[0], 'w') as hf:
                             hf.create_dataset('Lr_SAI_y', data=Lr_SAI_y.transpose((1, 0)), dtype='single')
                             hf.create_dataset('Hr_SAI_y', data=Hr_SAI_y.transpose((1, 0)), dtype='single')
-                            hf.close()
                             pass
 
                         pass

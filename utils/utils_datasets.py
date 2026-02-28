@@ -44,8 +44,13 @@ class TrainSetDataLoader(Dataset):
     def __getitem__(self, index):
         file_name = [self.dataset_dir + self.file_list[index]]
         with h5py.File(file_name[0], 'r') as hf:
-            Lr_SAI_y = np.array(hf.get('Lr_SAI_y')) # Lr_SAI_y
-            Hr_SAI_y = np.array(hf.get('Hr_SAI_y')) # Hr_SAI_y
+            Lr_SAI_y = np.array(hf.get('Lr_SAI_y')) # Lr_SAI_y — stored column-major (W,H)
+            Hr_SAI_y = np.array(hf.get('Hr_SAI_y')) # Hr_SAI_y — stored column-major (W,H)
+            # CRITICAL FIX (P1): h5 files are stored transposed (W,H) by Generate_Data_for_Training.py.
+            # Must transpose back to (H,W) before augmentation and ToTensor.
+            # TestSetDataLoader already does this correctly at lines 121-122.
+            Lr_SAI_y = np.transpose(Lr_SAI_y, (1, 0))
+            Hr_SAI_y = np.transpose(Hr_SAI_y, (1, 0))
             Lr_SAI_y, Hr_SAI_y = augmentation(Lr_SAI_y, Hr_SAI_y)
             Lr_SAI_y = ToTensor()(Lr_SAI_y.copy())
             Hr_SAI_y = ToTensor()(Hr_SAI_y.copy())
@@ -83,7 +88,9 @@ def MultiTestSetDataLoader(args):
         test_Dataset = TestSetDataLoader(args, data_name, Lr_Info=data_list.index(data_name))
         length_of_tests += len(test_Dataset)
 
-        test_Loaders.append(DataLoader(dataset=test_Dataset, num_workers=args.num_workers, batch_size=1, shuffle=False))
+        # P8: Force num_workers=0 for test loaders — h5py is not fork-safe and
+        # test sets are small enough that worker overhead exceeds benefit.
+        test_Loaders.append(DataLoader(dataset=test_Dataset, num_workers=0, batch_size=1, shuffle=False))
 
     return data_list, test_Loaders, length_of_tests
 
@@ -160,10 +167,10 @@ def flip_SAI(data, angRes):
 
 
 def augmentation(data, label):
-    if random.random() < 0.5:  # flip along W-V direction
+    if random.random() < 0.5:  # flip along W-V direction (axis=1)
         data = data[:, ::-1]
         label = label[:, ::-1]
-    if random.random() < 0.5:  # flip along W-V direction
+    if random.random() < 0.5:  # flip along H-U direction (axis=0)
         data = data[::-1, :]
         label = label[::-1, :]
     if random.random() < 0.5:  # transpose between U-V and H-W

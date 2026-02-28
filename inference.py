@@ -61,7 +61,7 @@ def main(args):
             # load params
             net.load_state_dict(new_state_dict)
             print('Use pretrain model!')
-        except:
+        except (RuntimeError, KeyError):
             new_state_dict = OrderedDict()
             for k, v in checkpoint['state_dict'].items():
                 new_state_dict[k] = v
@@ -109,7 +109,7 @@ def test(test_loader, device, net, args, save_dir=None):
 
         ''' SR the Patches '''
         net.eval()  # Set eval mode once before the loop
-        torch.cuda.empty_cache()  # Once before loop, not per-iteration
+        torch.cuda.empty_cache()  # Once before loop, not per-iteration (MED-5)
         for i in range(0, numU * numV, args.minibatch_for_test):
             tmp = subLFin[i:min(i + args.minibatch_for_test, numU * numV), :, :, :]
             with torch.no_grad():
@@ -126,7 +126,9 @@ def test(test_loader, device, net, args, save_dir=None):
         if save_dir is not None:
             save_dir_ = save_dir.joinpath(LF_name[0])
             save_dir_.mkdir(exist_ok=True)
-            Sr_SAI_ycbcr = torch.cat((Sr_SAI_y, Sr_SAI_cbcr), dim=1)
+            # P2 FIX: Sr_SAI_y is on GPU (from subLFout on device); Sr_SAI_cbcr is CPU.
+            # Move Sr_SAI_y to CPU before cat to avoid cross-device RuntimeError.
+            Sr_SAI_ycbcr = torch.cat((Sr_SAI_y.cpu(), Sr_SAI_cbcr), dim=1)
             Sr_SAI_rgb = (ycbcr2rgb(Sr_SAI_ycbcr.squeeze().permute(1, 2, 0).numpy()).clip(0,1)*255).astype('uint8')
             Sr_4D_rgb = rearrange(Sr_SAI_rgb, '(a1 h) (a2 w) c -> a1 a2 h w c', a1=args.angRes_out, a2=args.angRes_out)
 

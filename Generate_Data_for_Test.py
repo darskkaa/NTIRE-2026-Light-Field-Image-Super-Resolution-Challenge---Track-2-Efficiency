@@ -52,8 +52,9 @@ def main(args):
                     LF = np.array(data['LF'])
 
                 (U, V, H, W, _) = LF.shape
-                H = H // 4 * 4
-                W = W // 4 * 4
+                # Align H/W to multiples of scale_factor (not hardcoded 4) — P5 fix
+                H = H // scale_factor * scale_factor
+                W = W // scale_factor * scale_factor
 
                 # Extract central angRes * angRes views
                 LF = LF[(U-angRes)//2:(U+angRes)//2, (V-angRes)//2:(V+angRes)//2, 0:H, 0:W, 0:3]
@@ -89,7 +90,6 @@ def main(args):
                     hf.create_dataset('Lr_SAI_y', data=Lr_SAI_y.transpose((1, 0)), dtype='single')
                     hf.create_dataset('Sr_SAI_cbcr', data=Sr_SAI_cbcr.transpose((2, 1, 0)), dtype='single')
                     hf.create_dataset('Hr_SAI_y', data=Hr_SAI_y.transpose((1, 0)), dtype='single')
-                    hf.close()
                     pass
 
                 print('%d test samples have been generated\n' % (idx_scene_save))
