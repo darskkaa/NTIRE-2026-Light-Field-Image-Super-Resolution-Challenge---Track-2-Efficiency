@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 import h5py
+import gc
 from torch.utils.data import DataLoader
 from utils import *
 
@@ -51,6 +52,9 @@ class TrainSetDataLoader(Dataset):
 
         Lr_angRes_in = self.angRes_in
         Lr_angRes_out = self.angRes_out
+
+        if index % 50 == 0:
+            gc.collect()
 
         return Lr_SAI_y, Hr_SAI_y, [Lr_angRes_in, Lr_angRes_out]
 
@@ -132,6 +136,9 @@ class TestSetDataLoader(Dataset):
         Lr_angRes_in = self.angRes_in
         Lr_angRes_out = self.angRes_out
         LF_name = self.file_list[index].split('/')[-1].split('.')[0]
+
+        if index % 50 == 0:
+            gc.collect()
 
         return Lr_SAI_y, Hr_SAI_y, Sr_SAI_cbcr, [Lr_angRes_in, Lr_angRes_out], LF_name
 
