@@ -31,8 +31,8 @@ info "Starting workflow for V10 SOTA Architecture..."
 header "📦 STEP 1: VM Environment Setup"
 
 if ! conda env list | grep -q "lfsr"; then
-    info "Creating conda environment 'lfsr' (Python 3.12)..."
-    conda create -n lfsr python=3.12 -y
+    info "Creating conda environment 'lfsr' (Python 3.10)..."
+    conda create -n lfsr python=3.10 -y
 fi
 
 info "Activating conda environment..."
@@ -47,22 +47,41 @@ else
     info "Installing PyTorch 2.4.0 (cu121)..."
     pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
 
-    info "Installing mamba-ssm via pre-built wheels (Python 3.12 + CUDA 12 + PyTorch 2.4)..."
-    # Prebuilt wheels for cp312 (Python 3.12), cu12, torch2.4, cxx11abiTRUE
-    # System NVCC is CUDA 13.0 but PyTorch was built with CUDA 12.1 → use cu12 wheels.
-    CAUSAL_CONV1D_WHL="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+cu12torch2.4cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
-    MAMBA_SSM_WHL="https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu12torch2.4cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+    # --- Auto-detect Python version and CXX11 ABI for wheel selection ---
+    PYVER=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+    CXX_ABI=$(python -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')")
+    info "Detected: Python=${PYVER}, CXX11_ABI=${CXX_ABI}"
 
-    info "Trying prebuilt causal-conv1d wheel..."
-    if ! pip install "$CAUSAL_CONV1D_WHL"; then
-        warn "Prebuilt causal-conv1d wheel not found. Building from source (slow, ~5 min)..."
-        MAX_JOBS=4 pip install causal-conv1d --no-build-isolation
+    # Verified wheel URLs from GitHub Releases API (cu122 tag, not cu12)
+    CAUSAL_WHL="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+cu122torch2.4cxx11abi${CXX_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
+    MAMBA_WHL="https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu122torch2.4cxx11abi${CXX_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
+
+    info "Installing causal-conv1d..."
+    info "  Wheel URL: $CAUSAL_WHL"
+    if ! pip install "$CAUSAL_WHL"; then
+        # Try the opposite ABI
+        OTHER_ABI=$( [ "$CXX_ABI" = "TRUE" ] && echo "FALSE" || echo "TRUE" )
+        ALT_WHL="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+cu122torch2.4cxx11abi${OTHER_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
+        warn "Primary wheel failed. Trying alternate ABI (${OTHER_ABI})..."
+        if ! pip install "$ALT_WHL"; then
+            warn "No prebuilt wheel found. Building from source (~5 min)..."
+            # Override CUDA version check so nvcc 13.0 doesn't block the build
+            TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0" MAX_JOBS=4 \
+                pip install causal-conv1d==1.4.0 --no-build-isolation
+        fi
     fi
 
-    info "Trying prebuilt mamba-ssm wheel..."
-    if ! pip install "$MAMBA_SSM_WHL"; then
-        warn "Prebuilt mamba-ssm wheel not found. Building from source (slow, ~10 min)..."
-        MAX_JOBS=4 pip install mamba-ssm --no-build-isolation
+    info "Installing mamba-ssm..."
+    info "  Wheel URL: $MAMBA_WHL"
+    if ! pip install "$MAMBA_WHL"; then
+        OTHER_ABI=$( [ "$CXX_ABI" = "TRUE" ] && echo "FALSE" || echo "TRUE" )
+        ALT_WHL="https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu122torch2.4cxx11abi${OTHER_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
+        warn "Primary wheel failed. Trying alternate ABI (${OTHER_ABI})..."
+        if ! pip install "$ALT_WHL"; then
+            warn "No prebuilt wheel found. Building from source (~10 min)..."
+            TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0" MAX_JOBS=4 \
+                pip install mamba-ssm==2.2.2 --no-build-isolation
+        fi
     fi
 
     info "Installing other dependencies..."
