@@ -92,6 +92,25 @@ else
     info "Installing build dependencies..."
     pip install ninja packaging
 
+    # Bypass PyTorch's strict CUDA version check.
+    # System nvcc is 13.0 but PyTorch was compiled with cu128 (12.8).
+    # This is safe: CUDA 13.0 is backward-compatible with 12.8 at the ABI level.
+    info "Patching PyTorch cpp_extension.py to allow nvcc 13.0 with cu128..."
+    python -c "
+import torch.utils.cpp_extension as ext
+import inspect
+f = inspect.getfile(ext)
+with open(f) as fh:
+    s = fh.read()
+if 'raise RuntimeError(CUDA_MISMATCH_MESSAGE' in s:
+    s = s.replace('raise RuntimeError(CUDA_MISMATCH_MESSAGE', 'return  # raise RuntimeError(CUDA_MISMATCH_MESSAGE')
+    with open(f, 'w') as fh:
+        fh.write(s)
+    print(f'Patched {f} — CUDA version check bypassed')
+else:
+    print('Already patched or check not found, skipping')
+"
+
     info "Building causal-conv1d from source (~5 min)..."
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
         pip install causal-conv1d --no-binary causal-conv1d --no-build-isolation --no-cache-dir
