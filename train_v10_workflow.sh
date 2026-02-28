@@ -71,6 +71,11 @@ else
     # --- Build causal-conv1d and mamba-ssm from source ---
     # CRITICAL: --no-cache-dir prevents pip from reusing cached wheels that
     # were compiled against an older PyTorch ABI (causes "undefined symbol" at runtime).
+    # We also must bypass PyTorch's strict CUDA version check since nvcc is 13.0 and torch is 12.8.
+    # The safest way is to force the builder to use the CUDA tools pip installed with PyTorch.
+    export CUDA_HOME=$(python -c "import site; print(site.getsitepackages()[0] + '/nvidia/cuda_nvrtc')")
+    export NVCC_APPEND_FLAGS="-allow-unsupported-compiler"
+
     info "Building causal-conv1d from source (~5 min)..."
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
         pip install causal-conv1d==1.4.0 --no-build-isolation --no-cache-dir
