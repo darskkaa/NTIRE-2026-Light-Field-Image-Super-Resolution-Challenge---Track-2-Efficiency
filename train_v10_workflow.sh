@@ -30,20 +30,20 @@ info "Starting workflow for V10 SOTA Architecture..."
 #===============================================================================
 header "📦 STEP 1: VM Environment Setup"
 
+if ! conda env list | grep -q "lfsr"; then
+    info "Creating conda environment 'lfsr'..."
+    conda create -n lfsr python=3.10 -y
+fi
+
+info "Activating conda environment..."
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate lfsr
+
 if python -c "import mamba_ssm" &> /dev/null; then
-    success "mamba-ssm is already installed!"
+    success "mamba-ssm is already installed in 'lfsr' environment! Skipping installation."
 else
-    warn "mamba-ssm not found. Setting up environment..."
+    warn "mamba-ssm not found in environment. Setting up..."
     
-    if ! conda env list | grep -q "lfsr"; then
-        info "Creating conda environment 'lfsr'..."
-        conda create -n lfsr python=3.10 -y
-    fi
-
-    info "Activating conda environment..."
-    source $(conda info --base)/etc/profile.d/conda.sh
-    conda activate lfsr
-
     info "Installing PyTorch 2.4.0 (Stable)..."
     pip uninstall -y torch torchvision torchaudio mamba-ssm causal-conv1d
     pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
@@ -51,10 +51,10 @@ else
     info "Installing mamba-ssm (REQUIRED)..."
     # Pre-install build dependencies so we can use --no-build-isolation
     pip install packaging wheel ninja
-    # Use --no-build-isolation so it uses the torch==2.4.0 we just installed.
-    # This allows setup.py to correctly guess and download the pre-built wheel for torch 2.4 
-    # instead of downloading PyTorch 2.10 in an isolated environment and trying to compile.
+    # Use --no-build-isolation so setup.py uses the torch==2.4.0 we just installed.
+    # This correctly targets the pre-built wheel for torch 2.4 avoiding 404 errors.
     pip install causal-conv1d>=1.4.0 mamba-ssm --no-build-isolation --no-cache-dir
+
     info "Installing other dependencies..."
     pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib
 fi
