@@ -27,7 +27,7 @@ parser.add_argument('--local_rank', dest='local_rank', type=int, default=0, )
 # NOTE: Masked pre-training (MLFIM) is now handled INSIDE the model's
 # forward() method. No external args needed.
 
-args = parser.parse_args()
+args, _ = parser.parse_known_args()
 
 
 
