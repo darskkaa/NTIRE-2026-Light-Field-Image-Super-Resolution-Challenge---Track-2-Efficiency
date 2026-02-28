@@ -46,58 +46,36 @@ else
     pip install "transformers<4.45.0"
 fi
 
-if python -c "from mamba_ssm.modules.mamba_simple import Mamba" &> /dev/null && \
-   python -c "import torch; assert 'sm_120' in torch.cuda.get_arch_list()" &> /dev/null; then
-    success "mamba-ssm is already installed and PyTorch supports sm_120! Skipping installation."
+# Full validation: mamba-ssm must import AND its CUDA kernels must load
+if python -c "from mamba_ssm.modules.mamba_simple import Mamba; import torch; assert 'sm_120' in torch.cuda.get_arch_list(); print('OK')" &> /dev/null; then
+    success "mamba-ssm is working and PyTorch supports sm_120! Skipping installation."
 else
-    warn "Missing mamba-ssm or PyTorch lacks sm_120 support. Installing..."
+    warn "Missing mamba-ssm, broken CUDA kernels, or PyTorch lacks sm_120 support. Installing..."
 
-    info "Removing old PyTorch (if any) to avoid 'already satisfied' skips..."
-    pip uninstall -y torch torchvision torchaudio 2>/dev/null || true
+    # --- Remove ALL old packages to prevent ABI mismatch ---
+    info "Removing old PyTorch and mamba packages..."
+    pip uninstall -y torch torchvision torchaudio mamba-ssm causal-conv1d 2>/dev/null || true
+    # Also remove the standalone .so that mamba-ssm installs at site-packages root
+    rm -f /venv/lfsr/lib/python*/site-packages/selective_scan_cuda*.so 2>/dev/null || true
+    rm -f /venv/lfsr/lib/python*/site-packages/causal_conv1d_cuda*.so 2>/dev/null || true
 
     info "Installing PyTorch nightly (cu128) for RTX 5090 Blackwell sm_120 support..."
     pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
-    # --- Auto-detect Python version and CXX11 ABI for wheel selection ---
-    PYVER=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
-    CXX_ABI=$(python -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')")
-    info "Detected: Python=${PYVER}, CXX11_ABI=${CXX_ABI}"
+    # Verify PyTorch installed correctly
+    python -c "import torch; print(f'PyTorch {torch.__version__}'); print(f'CUDA archs: {torch.cuda.get_arch_list()}')"
 
-    # Detect installed torch version for wheel matching
-    TORCH_VER=$(python -c "import torch; v=torch.__version__.split('+')[0].split('.')[:2]; print(f'{v[0]}.{v[1]}')")
-    info "Detected PyTorch version: ${TORCH_VER}"
+    # --- Build causal-conv1d and mamba-ssm from source ---
+    # NOTE: Prebuilt wheels are compiled against PyTorch 2.4 and will cause
+    # "undefined symbol" errors at runtime with PyTorch nightly. We MUST
+    # build from source to match the installed PyTorch's C++ ABI.
+    info "Building causal-conv1d from source (~5 min)..."
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
+        pip install causal-conv1d==1.4.0 --no-build-isolation
 
-    # Try prebuilt wheels first (cu122/torch2.4 — may not match nightly)
-    CAUSAL_WHL="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+cu122torch2.4cxx11abi${CXX_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
-    MAMBA_WHL="https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu122torch2.4cxx11abi${CXX_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
-
-    info "Installing causal-conv1d..."
-    info "  Wheel URL: $CAUSAL_WHL"
-    if ! pip install "$CAUSAL_WHL"; then
-        # Try the opposite ABI
-        OTHER_ABI=$( [ "$CXX_ABI" = "TRUE" ] && echo "FALSE" || echo "TRUE" )
-        ALT_WHL="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+cu122torch2.4cxx11abi${OTHER_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
-        warn "Primary wheel failed. Trying alternate ABI (${OTHER_ABI})..."
-        if ! pip install "$ALT_WHL"; then
-            warn "No prebuilt wheel found. Building from source (~5 min)..."
-            # Override CUDA version check so nvcc 13.0 doesn't block the build
-            TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
-                pip install causal-conv1d==1.4.0 --no-build-isolation
-        fi
-    fi
-
-    info "Installing mamba-ssm..."
-    info "  Wheel URL: $MAMBA_WHL"
-    if ! pip install "$MAMBA_WHL"; then
-        OTHER_ABI=$( [ "$CXX_ABI" = "TRUE" ] && echo "FALSE" || echo "TRUE" )
-        ALT_WHL="https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu122torch2.4cxx11abi${OTHER_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
-        warn "Primary wheel failed. Trying alternate ABI (${OTHER_ABI})..."
-        if ! pip install "$ALT_WHL"; then
-            warn "No prebuilt wheel found. Building from source (~10 min)..."
-            TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
-                pip install mamba-ssm==2.2.2 --no-build-isolation
-        fi
-    fi
+    info "Building mamba-ssm from source (~10 min)..."
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
+        pip install mamba-ssm==2.2.2 --no-build-isolation
 fi
 
 info "Installing other dependencies..."
