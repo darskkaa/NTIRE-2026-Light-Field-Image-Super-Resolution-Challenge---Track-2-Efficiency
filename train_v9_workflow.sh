@@ -56,12 +56,12 @@ else
 
     pip install "$CAUSAL_CONV1D_WHL"
     pip install "$MAMBA_SSM_WHL"
-
-    info "Installing other dependencies..."
-    pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib gdown
-
-    success "All packages installed! This won't run again on future executions."
 fi
+
+info "Installing other dependencies..."
+pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib gdown
+
+success "All packages installed! This won't run again on future executions."
 
 info "Verifying installations..."
 python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}')"

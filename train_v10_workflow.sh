@@ -86,12 +86,12 @@ else
                 pip install mamba-ssm==2.2.2 --no-build-isolation
         fi
     fi
-
-    info "Installing other dependencies..."
-    pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib gdown
-
-    success "All packages installed! This won't run again on future executions."
 fi
+
+info "Installing other dependencies..."
+pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib gdown
+
+success "All packages installed! This won't run again on future executions."
 
 # Verify einops (required for V10 rearranges)
 if ! python -c "import einops" &> /dev/null; then
