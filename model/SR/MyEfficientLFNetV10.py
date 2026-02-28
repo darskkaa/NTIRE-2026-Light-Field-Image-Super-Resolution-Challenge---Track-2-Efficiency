@@ -28,7 +28,7 @@ V10 Novel Architecture (Track 2 Efficiency — <1M params, <20G FLOPs):
   5. Window Attention for global context (absent from LFMamba)
   6. V9-proven composite loss (Charb + FFT + SSIM + Grad + Angular)
 
-Track 2 Efficiency Budget: C=48, n_sa=2, n_epi=2 → ~874K params (87%).
+Track 2 Efficiency Budget: C=32, n_sa=2, n_epi=2, vss_depth=1, 2-dir scan.
 """
 
 import torch
@@ -83,13 +83,13 @@ class get_model(nn.Module):
 
         # V10 hyperparameters — Track 2 Efficiency (<1M params, <20G FLOPs)
         # Swept from C=64/n_sa=4/n_epi=3 (2.25M) to fit budget
-        self.channels   = 48
+        self.channels   = 32      # was 48 — reduced for FLOPs (O(C²) savings)
         self.n_sa       = 2       # number of Spa-Ang groups (was 4)
         self.n_epi      = 2       # number of EPI groups (was 3)
         self.d_state    = 16
         self.d_conv     = 4
         self.expand     = 2.0     # matching LFMamba's proven value
-        self.vss_depth  = 2       # VSSBlocks per group, matching LFMamba
+        self.vss_depth  = 1       # was 2 — reduced for FLOPs
 
         C = self.channels
 
@@ -322,7 +322,7 @@ class SpaAngGroup(nn.Module):
         self.ang_block = AngSSMBlock(channels, angRes, d_state, d_conv,
                                      expand, depth)
         self.sam = SpatialAngularModulator(channels, angRes)
-        self.fass = FASSModule(channels)
+        # FASS removed from SpaAngGroup — kept in EPIGroup where HF matters
         self.res_scale = nn.Parameter(torch.ones(1) * 0.2)
 
     def forward(self, x, angRes):
@@ -333,11 +333,6 @@ class SpaAngGroup(nn.Module):
         feat = self.ang_block(feat, angRes)
         # SAM modulation
         feat = self.sam(feat, angRes)
-        # FASS HF injection (operates on 2D, so temporarily flatten)
-        B, C, A, h, w = feat.shape
-        feat_2d = rearrange(feat, 'b c a h w -> (b a) c h w')
-        feat_2d = self.fass(feat_2d)
-        feat = rearrange(feat_2d, '(b a) c h w -> b c a h w', a=A)
 
         return x + self.res_scale * feat
 
@@ -514,29 +509,25 @@ class BMDMambaLayer(nn.Module):
         L = H * W
         x_in = x
 
-        # ---- build 4 directional sequences --------------------------------
+        # ---- build 2 directional sequences (was 4 — halved for FLOPs) -----
         s0 = x.flatten(2)                                      # (B, C, L) row-major
-        s1 = x.flatten(2).flip(-1)                             # reversed
-        s2 = x.permute(0, 1, 3, 2).flatten(2)                 # col-major
-        s3 = x.permute(0, 1, 3, 2).flatten(2).flip(-1)        # reversed col
+        s1 = x.permute(0, 1, 3, 2).flatten(2)                 # col-major
 
-        # Stack along batch: (4B, L, C) for Mamba
-        batched = torch.cat([s0, s1, s2, s3], dim=0)          # (4B, C, L)
-        batched = batched.transpose(1, 2).contiguous()         # (4B, L, C)
+        # Stack along batch: (2B, L, C) for Mamba
+        batched = torch.cat([s0, s1], dim=0)                   # (2B, C, L)
+        batched = batched.transpose(1, 2).contiguous()         # (2B, L, C)
         batched = self.norm(batched)
 
         # ---- Mamba pass ---------------------------------------------------
-        out = self.mamba(batched)                               # (4B, L, C)
-        out = out.transpose(1, 2).contiguous()                 # (4B, C, L)
+        out = self.mamba(batched)                               # (2B, L, C)
+        out = out.transpose(1, 2).contiguous()                 # (2B, C, L)
 
         # ---- un-batch and reshape -----------------------------------------
-        o0, o1, o2, o3 = out.chunk(4, dim=0)
+        o0, o1 = out.chunk(2, dim=0)
         r0 = o0.view(B, C, H, W)
-        r1 = o1.flip(-1).view(B, C, H, W)
-        r2 = o2.view(B, C, W, H).permute(0, 1, 3, 2).contiguous()
-        r3 = o3.flip(-1).view(B, C, W, H).permute(0, 1, 3, 2).contiguous()
+        r1 = o1.view(B, C, W, H).permute(0, 1, 3, 2).contiguous()
 
-        combined = (r0 + r1 + r2 + r3) * 0.25
+        combined = (r0 + r1) * 0.5
         out_feat = self.dir_fusion(combined)
 
         # skip connection with learnable per-channel scale
@@ -803,10 +794,10 @@ class ReconstructionHead(nn.Module):
 
     def __init__(self, channels, scale):
         super().__init__()
+        # Simplified refine: single 3×3 conv (was two)
         self.refine = nn.Sequential(
             nn.Conv2d(channels, channels, 3, padding=1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(channels, channels, 3, padding=1, bias=False),
         )
 
         # Channel attention
@@ -819,20 +810,20 @@ class ReconstructionHead(nn.Module):
             nn.Sigmoid(),
         )
 
-        # PixelShuffle upsampler
+        # PixelShuffle upsampler — 1×1 convs (was 3×3, 9× cheaper)
         if scale == 4:
             self.up = nn.Sequential(
-                nn.Conv2d(channels, channels * 4, 3, padding=1, bias=False),
+                nn.Conv2d(channels, channels * 4, 1, bias=False),
                 nn.PixelShuffle(2),
                 nn.LeakyReLU(0.2, inplace=True),
-                nn.Conv2d(channels, channels * 4, 3, padding=1, bias=False),
+                nn.Conv2d(channels, channels * 4, 1, bias=False),
                 nn.PixelShuffle(2),
                 nn.LeakyReLU(0.2, inplace=True),
             )
         else:
             self.up = nn.Sequential(
-                nn.Conv2d(channels, channels * scale * scale, 3,
-                          padding=1, bias=False),
+                nn.Conv2d(channels, channels * scale * scale, 1,
+                          bias=False),
                 nn.PixelShuffle(scale),
                 nn.LeakyReLU(0.2, inplace=True),
             )
