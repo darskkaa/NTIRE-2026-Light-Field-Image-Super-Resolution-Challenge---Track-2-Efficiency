@@ -5,15 +5,9 @@ import torch.backends.cudnn as cudnn
 from utils.utils import *
 from utils.utils_datasets import TrainSetDataLoader, MultiTestSetDataLoader
 from collections import OrderedDict
+
 import imageio
 
-# Masked Angular Pre-Training (LFTransMamba-style, +0.2 dB boost)
-try:
-    from utils.masked_pretraining import ProgressiveMasking, apply_masked_pretraining
-    MASKED_PRETRAIN_AVAILABLE = True
-except ImportError:
-    MASKED_PRETRAIN_AVAILABLE = False
-    print("Warning: masked_pretraining module not found. Proceeding without it.")
 
 
 
@@ -51,6 +45,7 @@ def main(args):
 
 
     ''' Load Pre-Trained PTH '''
+    _ckpt_ref = None  # saved for scheduler/optimizer state restoration below
     if args.use_pre_ckpt == False:
         net.apply(MODEL.weights_init)
         start_epoch = 0
@@ -60,6 +55,7 @@ def main(args):
             ckpt_path = args.path_pre_pth
             checkpoint = torch.load(ckpt_path, map_location='cpu')
             start_epoch = checkpoint['epoch']
+            _ckpt_ref = checkpoint
             try:
                 new_state_dict = OrderedDict()
                 for k, v in checkpoint['state_dict'].items():
@@ -123,24 +119,33 @@ def main(args):
         optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs]
     )
     
-    # AMP Scaler for mixed precision training
-    scaler = torch.amp.GradScaler('cuda')
+    # Restore scheduler + optimizer state from checkpoint.
+    # IMPORTANT: Load optimizer LAST due to PyTorch SequentialLR bug #119168 —
+    # SequentialLR.__init__() has undocumented side-effects that corrupt
+    # optimizer state (resets _step_count, modifies initial_lr). Loading
+    # optimizer after scheduler overrides any corruption.
+    if _ckpt_ref is not None:
+        if 'scheduler' in _ckpt_ref:
+            try:
+                scheduler.load_state_dict(_ckpt_ref['scheduler'])
+                logger.log_string('Restored scheduler state from checkpoint.')
+            except Exception as e:
+                logger.log_string(f'Could not restore scheduler state: {e} — starting fresh.')
+        if 'optimizer' in _ckpt_ref:
+            try:
+                optimizer.load_state_dict(_ckpt_ref['optimizer'])
+                logger.log_string('Restored optimizer state from checkpoint.')
+            except Exception as e:
+                logger.log_string(f'Could not restore optimizer state: {e} — starting fresh.')
+        _ckpt_ref = None  # free memory
     
-    # Masked Angular Pre-Training (LFTransMamba-style)
-    # Reference: https://openaccess.thecvf.com/content/CVPR2025W/NTIRE/papers/Jin_LFTransMamba
-    # Adds +0.2-0.3 dB PSNR with zero inference cost
-    use_masked_pretrain = getattr(args, 'use_masked_pretrain', True) and MASKED_PRETRAIN_AVAILABLE
-    if use_masked_pretrain:
-        mask_pretrain = ProgressiveMasking(
-            angRes=args.angRes_in,
-            start_ratio=0.1,   # Start with 10% masking
-            end_ratio=0.3,     # Increase to 30% by warmup_epochs
-            warmup_epochs=min(20, args.epoch // 4)
-        )
-        logger.log_string('Masked Angular Pre-Training: ENABLED (progressive 10%→30%)')
-    else:
-        mask_pretrain = None
-        logger.log_string('Masked Angular Pre-Training: DISABLED')
+    # NOTE: Using bfloat16 (not fp16) — more stable for Mamba SSMs on Ampere+
+    # GradScaler is NOT needed for bfloat16 (no loss scaling required)
+    
+    # NOTE: MLFIM (Masked Light Field Image Modeling) is now handled
+    # INSIDE the model's forward() method at the feature level, matching
+    # the official LFTransMamba implementation. No train.py masking needed.
+
 
 
     ''' TRAINING & TEST '''
@@ -148,15 +153,9 @@ def main(args):
     for idx_epoch in range(start_epoch, args.epoch):
         logger.log_string('\nEpoch %d /%s:' % (idx_epoch + 1, args.epoch))
 
-        # Update masking ratio if using progressive masking
-        if use_masked_pretrain and mask_pretrain is not None:
-            mask_pretrain.set_epoch(idx_epoch)
-            mask_pretrain.train()
-
         ''' Training '''
         loss_epoch_train, psnr_epoch_train, ssim_epoch_train = train(
-            train_loader, device, net, criterion, optimizer, scaler,
-            mask_pretrain=mask_pretrain if use_masked_pretrain else None
+            train_loader, device, net, criterion, optimizer
         )
         logger.log_string('The %dth Train, loss is: %.5f, psnr is %.5f, ssim is %.5f' %
                           (idx_epoch + 1, loss_epoch_train, psnr_epoch_train, ssim_epoch_train))
@@ -169,6 +168,8 @@ def main(args):
             state = {
                 'epoch': idx_epoch + 1,
                 'state_dict': net.module.state_dict() if hasattr(net, 'module') else net.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
             }
             torch.save(state, save_ckpt_path)
             logger.log_string('Saving the epoch_%02d model at %s' % (idx_epoch + 1, save_ckpt_path))
@@ -218,7 +219,7 @@ def main(args):
     pass
 
 
-def train(train_loader, device, net, criterion, optimizer, scaler, mask_pretrain=None):
+def train(train_loader, device, net, criterion, optimizer):
     '''
     Training one epoch.
     
@@ -228,10 +229,11 @@ def train(train_loader, device, net, criterion, optimizer, scaler, mask_pretrain
         net: Model to train
         criterion: Loss function
         optimizer: Optimizer
-        scaler: GradScaler for AMP
-        mask_pretrain: Optional ProgressiveMasking for masked angular pre-training
-                      (LFTransMamba-style, adds +0.2 dB PSNR)
+    
+    Note: MLFIM (feature-level masking) is handled inside the model's
+          forward() method, matching official LFTransMamba.
     '''
+    net.train()  # CRITICAL: ensure training mode after validation (MLFIM needs self.training=True)
     psnr_iter_train = []
     loss_iter_train = []
     ssim_iter_train = []
@@ -243,17 +245,10 @@ def train(train_loader, device, net, criterion, optimizer, scaler, mask_pretrain
         data = data.to(device)      # low resolution
         label = label.to(device)    # high resolution
         
-        # Apply Masked Angular Pre-Training if enabled
-        # This masks random angular views in LR input, forcing model to learn
-        # strong angular correlations. HR target is NOT masked.
-        # Reference: LFTransMamba (CVPR 2025W) - adds +0.2-0.3 dB PSNR
-        if mask_pretrain is not None:
-            data, mask_info = mask_pretrain(data)
-        
         optimizer.zero_grad()
         
         # Mixed Precision Training
-        with torch.amp.autocast('cuda'):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             out = net(data, data_info)
             loss = criterion(out, label, data_info)
 
@@ -261,16 +256,14 @@ def train(train_loader, device, net, criterion, optimizer, scaler, mask_pretrain
             print(f"Error: Loss is NaN at epoch {idx_iter}")
             continue
 
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)  # Unscale before clipping
+        loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)  # Gradient clipping
-        scaler.step(optimizer)
-        scaler.update()
+        optimizer.step()
         
         # torch.cuda.empty_cache() # Removed for speed
 
         loss_iter_train.append(loss.data.cpu())
-        psnr, ssim = cal_metrics(args, label, out.float()) # Convert to float for metric calc
+        psnr, ssim = cal_metrics(args, label.detach(), out.detach().float())
         psnr_iter_train.append(psnr)
         ssim_iter_train.append(ssim)
         pass
@@ -304,10 +297,10 @@ def test(test_loader, device, net, args, save_dir=None):
                                args.angRes_in * args.patch_size_for_test * args.scale_factor)
 
         ''' SR the Patches '''
+        net.eval()  # Set eval mode once before the loop
         for i in range(0, numU * numV, args.minibatch_for_test):
             tmp = subLFin[i:min(i + args.minibatch_for_test, numU * numV), :, :, :]
             with torch.no_grad():
-                net.eval()
                 torch.cuda.empty_cache()
                 out = net(tmp.to(device), data_info)
                 subLFout[i:min(i + args.minibatch_for_test, numU * numV), :, :, :] = out

@@ -222,11 +222,16 @@ success "V10 Results available in log/SR_5x5_4x/ALL/MyEfficientLFNetV10/"
 header "✅ STEP 9: Validate Submission"
 
 if [ -f "validate_submission.py" ]; then
-    info "Running submission validator..."
-    if python validate_submission.py --model_name MyEfficientLFNetV10 --angRes 5 --scale_factor 4; then
-        success "Submission validation passed!"
+    RESULTS_DIR="log/SR_5x5_4x/ALL/MyEfficientLFNetV10/results/TEST"
+    if [ -d "$RESULTS_DIR" ]; then
+        info "Running submission validator on $RESULTS_DIR..."
+        if python validate_submission.py "$RESULTS_DIR"; then
+            success "Submission validation passed!"
+        else
+            warn "Submission validation had issues — check output above."
+        fi
     else
-        warn "Submission validation had issues — check output above."
+        warn "Results directory $RESULTS_DIR not found. Run inference first (Step 8)."
     fi
 else
     warn "validate_submission.py not found, skipping validation."

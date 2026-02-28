@@ -3,91 +3,13 @@ import torch
 import torch.backends.cudnn as cudnn
 from utils.utils import *
 from collections import OrderedDict
-from torch.utils.data.dataset import Dataset
-from torch.utils.data import DataLoader
-import h5py
-from torchvision.transforms import ToTensor
 import imageio
 from tqdm import tqdm
 from fvcore.nn import FlopCountAnalysis
 
 
-def MultiTestSetDataLoader(args):
-    # get testdataloader of every test dataset
-    data_list = None
-    if args.data_name in ['ALL', 'RE_Lytro', 'RE_HCI']:
-        if args.task == 'SR':
-            dataset_dir = args.path_for_test + 'SR_' + str(args.angRes_in) + 'x' + str(args.angRes_in) + '_' + \
-                          str(args.scale_factor) + 'x/'
-            data_list = os.listdir(dataset_dir)
-        elif args.task == 'RE':
-            dataset_dir = args.path_for_test + 'RE_' + str(args.angRes_in) + 'x' + str(args.angRes_in) + '_' + \
-                          str(args.angRes_out) + 'x' + str(args.angRes_out) + '/' + args.data_name
-            data_list = os.listdir(dataset_dir)
-    else:
-        data_list = [args.data_name]
+from utils.utils_datasets import MultiTestSetDataLoader, TestSetDataLoader
 
-    test_Loaders = []
-    length_of_tests = 0
-    for data_name in data_list:
-        test_Dataset = TestSetDataLoader(args, data_name, Lr_Info=data_list.index(data_name))
-        length_of_tests += len(test_Dataset)
-
-        test_Loaders.append(DataLoader(dataset=test_Dataset, num_workers=args.num_workers, batch_size=1, shuffle=False))
-
-    return data_list, test_Loaders, length_of_tests
-
-
-class TestSetDataLoader(Dataset):
-    def __init__(self, args, data_name = 'ALL', Lr_Info=None):
-        super(TestSetDataLoader, self).__init__()
-        self.angRes_in = args.angRes_in
-        self.angRes_out = args.angRes_out
-        if args.task == 'SR':
-            # Try standard structure
-            self.dataset_dir = args.path_for_test + 'SR_' + str(args.angRes_in) + 'x' + str(args.angRes_in) + '_' + \
-                               str(args.scale_factor) + 'x/'
-            if not os.path.exists(self.dataset_dir + data_name):
-                 # Fallback: maybe it's directly in path_for_test
-                 self.dataset_dir = args.path_for_test
-            self.data_list = [data_name]
-        elif args.task == 'RE':
-            self.dataset_dir = args.path_for_test + 'RE_' + str(args.angRes_in) + 'x' + str(args.angRes_in) + '_' + \
-                               str(args.angRes_out) + 'x' + str(args.angRes_out) + '/' + args.data_name + '/'
-            self.data_list = [data_name]
-
-        self.file_list = []
-        for data_name in self.data_list:
-            tmp_list = os.listdir(self.dataset_dir + data_name)
-            for index, _ in enumerate(tmp_list):
-                tmp_list[index] = data_name + '/' + tmp_list[index]
-
-            self.file_list.extend(tmp_list)
-
-        self.item_num = len(self.file_list)
-
-    def __getitem__(self, index):
-        file_name = [self.dataset_dir + self.file_list[index]]
-        with h5py.File(file_name[0], 'r') as hf:
-            Lr_SAI_y = np.array(hf.get('Lr_SAI_y'))
-            Hr_SAI_y = np.array(hf.get('Hr_SAI_y'))
-            Sr_SAI_cbcr = np.array(hf.get('Sr_SAI_cbcr'), dtype='single')
-            Lr_SAI_y = np.transpose(Lr_SAI_y, (1, 0))
-            Hr_SAI_y = np.transpose(Hr_SAI_y, (1, 0))
-            Sr_SAI_cbcr  = np.transpose(Sr_SAI_cbcr,  (2, 1, 0))
-
-        Lr_SAI_y = ToTensor()(Lr_SAI_y.copy())
-        Hr_SAI_y = ToTensor()(Hr_SAI_y.copy())
-        Sr_SAI_cbcr = ToTensor()(Sr_SAI_cbcr.copy())
-
-        Lr_angRes_in = self.angRes_in
-        Lr_angRes_out = self.angRes_out
-        LF_name = self.file_list[index].split('/')[-1].split('.')[0]
-
-        return Lr_SAI_y, Hr_SAI_y, Sr_SAI_cbcr, [Lr_angRes_in, Lr_angRes_out], LF_name
-
-    def __len__(self):
-        return self.item_num
 
 
 def main(args):
@@ -166,10 +88,10 @@ def main(args):
             save_dir = result_dir.joinpath(test_name)
             save_dir.mkdir(exist_ok=True)
 
-            test(test_loader, device, net, save_dir)
+            test(test_loader, device, net, args, save_dir)
     pass
 
-def test(test_loader, device, net, save_dir=None):
+def test(test_loader, device, net, args, save_dir=None):
     for idx_iter, (Lr_SAI_y, Hr_SAI_y, Sr_SAI_cbcr, data_info, LF_name) in tqdm(enumerate(test_loader), total=len(test_loader), ncols=70):
         [Lr_angRes_in, Lr_angRes_out] = data_info
         data_info[0] = Lr_angRes_in[0].item()
@@ -183,14 +105,14 @@ def test(test_loader, device, net, save_dir=None):
         numU, numV, H, W = subLFin.size()
         subLFin = rearrange(subLFin, 'n1 n2 a1h a2w -> (n1 n2) 1 a1h a2w')
         subLFout = torch.zeros(numU * numV, 1, args.angRes_in * args.patch_size_for_test * args.scale_factor,
-                               args.angRes_in * args.patch_size_for_test * args.scale_factor)
+                               args.angRes_in * args.patch_size_for_test * args.scale_factor, device=device)
 
         ''' SR the Patches '''
+        net.eval()  # Set eval mode once before the loop
+        torch.cuda.empty_cache()  # Once before loop, not per-iteration
         for i in range(0, numU * numV, args.minibatch_for_test):
             tmp = subLFin[i:min(i + args.minibatch_for_test, numU * numV), :, :, :]
             with torch.no_grad():
-                net.eval()
-                torch.cuda.empty_cache()
                 out = net(tmp.to(device), data_info)
                 subLFout[i:min(i + args.minibatch_for_test, numU * numV), :, :, :] = out
         subLFout = rearrange(subLFout, '(n1 n2) 1 a1h a2w -> n1 n2 a1h a2w', n1=numU, n2=numV)

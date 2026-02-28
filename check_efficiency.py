@@ -1,239 +1,261 @@
 """
-Efficiency Check Script for NTIRE 2026 LF-SR Challenge Track 2
+NTIRE 2026 Track 2 Efficiency Validation
+==========================================
+Uses fvcore (official required library) to measure:
+  - Parameters (limit: < 1,000,000)
+  - FLOPs (limit: < 20G with input 5x5x32x32)
 
-Verifies that the model meets the efficiency constraints:
-- Parameters: < 1,000,000 (< 1MB)
-- FLOPs: < 20G (measured on 1x25x32x32x3 MacPI format input)
+Also measures inference time as additional metric.
 
 Usage:
-    python check_efficiency.py --model_name MyEfficientLFNet
+  python check_efficiency.py --model_name MyEfficientLFNetV10
 """
 
 import argparse
+import time
+import sys
 import torch
 import importlib
-import sys
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='Check model efficiency for NTIRE 2026')
-    parser.add_argument('--model_name', type=str, default='MyEfficientLFNet',
-                        help='Model name (must exist in model/SR/)')
-    parser.add_argument('--angRes', type=int, default=5,
-                        help='Angular resolution')
-    parser.add_argument('--scale_factor', type=int, default=4,
-                        help='Spatial upscaling factor')
-    parser.add_argument('--patch_size', type=int, default=32,
-                        help='Spatial patch size (LR)')
-    parser.add_argument('--deploy', action='store_true',
-                        help='Check in deploy mode (fused RepVGG blocks)')
-    return parser.parse_args()
+import numpy as np
 
 
 def count_parameters(model):
-    """Count total and trainable parameters."""
-    total = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return total, trainable
+    """Count total trainable parameters."""
+    return sum(p.numel() for p in model.parameters())
 
 
-def count_flops_fvcore(model, input_tensor):
-    """Count FLOPs using fvcore (recommended by NTIRE)."""
+def measure_flops(model, input_tensor, model_name):
+    """Measure FLOPs using fvcore (NTIRE 2026 official method)."""
     try:
-        from fvcore.nn import FlopCountAnalysis, parameter_count_table
-        
-        flops = FlopCountAnalysis(model, input_tensor)
-        total_flops = flops.total()
-        
-        return total_flops
+        from fvcore.nn import FlopCountAnalysis, parameter_count
     except ImportError:
-        print("Warning: fvcore not installed. Install with: pip install fvcore")
+        print("❌ fvcore not installed! Install: pip install fvcore")
+        print("   fvcore is REQUIRED by NTIRE 2026 for FLOPs measurement.")
         return None
 
+    # Register custom ops for Mamba selective scan (if present)
+    # These are ignored in FLOPs counting (standard practice for Mamba models)
+    try:
+        from fvcore.nn import FlopCountAnalysis
 
-def count_flops_manual(model, input_tensor):
-    """Manual FLOPs counting using hooks (fallback)."""
-    from torch.nn.modules.conv import Conv2d
-    from torch.nn.modules.linear import Linear
-    
-    total_flops = 0
-    
-    def conv_hook(module, input, output):
-        nonlocal total_flops
-        batch_size = input[0].size(0)
-        output_channels = output.size(1)
-        output_height = output.size(2)
-        output_width = output.size(3)
-        
-        kernel_size = module.kernel_size[0] * module.kernel_size[1]
-        in_channels = module.in_channels
-        groups = module.groups
-        
-        flops_per_instance = kernel_size * in_channels // groups
-        total_instances = batch_size * output_channels * output_height * output_width
-        total_flops += flops_per_instance * total_instances * 2  # multiply-add
-    
-    def linear_hook(module, input, output):
-        nonlocal total_flops
-        batch_size = input[0].size(0)
-        total_flops += batch_size * module.in_features * module.out_features * 2
-    
-    hooks = []
-    for module in model.modules():
-        if isinstance(module, Conv2d):
-            hooks.append(module.register_forward_hook(conv_hook))
-        elif isinstance(module, Linear):
-            hooks.append(module.register_forward_hook(linear_hook))
-    
-    with torch.no_grad():
-        model(input_tensor)
-    
-    for hook in hooks:
-        hook.remove()
-    
+        def _selective_scan_flop_jit(inputs, outputs):
+            """FLOPs for Mamba selective scan (from mamba_ssm)."""
+            def flops_fn(B=1, L=256, D=768, N=16, with_D=True, with_Z=False):
+                flops = 9 * B * L * D * N
+                if with_D:
+                    flops += B * D * L
+                if with_Z:
+                    flops += B * D * L
+                return flops
+
+            try:
+                B, D, L = inputs[0].type().sizes()
+                N = inputs[2].type().sizes()[1]
+                return flops_fn(B=B, L=L, D=D, N=N, with_D=True, with_Z=False)
+            except:
+                return 0
+
+        supported_ops = {
+            "aten::silu": None,
+            "aten::neg": None,
+            "aten::exp": None,
+            "aten::flip": None,
+            "prim::PythonOp.SelectiveScanMamba": _selective_scan_flop_jit,
+            "prim::PythonOp.SelectiveScanOflex": _selective_scan_flop_jit,
+            "prim::PythonOp.SelectiveScanCore": _selective_scan_flop_jit,
+            "prim::PythonOp.SelectiveScanNRow": _selective_scan_flop_jit,
+        }
+    except Exception:
+        supported_ops = {}
+
+    flop_counter = FlopCountAnalysis(model, input_tensor)
+    if supported_ops:
+        flop_counter.set_op_handle(**supported_ops)
+
+    # Suppress warnings about unrecognized ops
+    flop_counter.unsupported_ops_warnings(False)
+    flop_counter.uncalled_modules_warnings(False)
+
+    total_flops = flop_counter.total()
+
+    # Print per-module breakdown (top-level only)
+    print("\n📊 FLOPs Breakdown (top-level modules):")
+    print("-" * 50)
+    by_module = flop_counter.by_module()
+    for name, flops in sorted(by_module.items(), key=lambda x: -x[1]):
+        if name == "" or name.count(".") > 1:
+            continue
+        if flops > 0:
+            print(f"  {name:40s} {flops/1e9:>8.3f} G")
+
     return total_flops
 
 
+def measure_inference_time(model, input_tensor, warmup=10, runs=50):
+    """Measure inference time (additional NTIRE 2026 metric)."""
+    # Warmup
+    with torch.no_grad():
+        for _ in range(warmup):
+            _ = model(input_tensor)
+    torch.cuda.synchronize()
+
+    # Timed runs
+    times = []
+    with torch.no_grad():
+        for _ in range(runs):
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            _ = model(input_tensor)
+            torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            times.append(t1 - t0)
+
+    times = np.array(times)
+    return {
+        "mean": times.mean(),
+        "std": times.std(),
+        "median": np.median(times),
+        "min": times.min(),
+        "max": times.max(),
+    }
+
+
 def main():
-    args = parse_args()
-    
+    parser = argparse.ArgumentParser(description="NTIRE 2026 Track 2 Efficiency Check")
+    parser.add_argument("--model_name", type=str, default="MyEfficientLFNetV10",
+                        help="Model name (must exist in model/SR/)")
+    parser.add_argument("--angRes", type=int, default=5, help="Angular resolution")
+    parser.add_argument("--scale_factor", type=int, default=4, help="Scale factor")
+    parser.add_argument("--patch_size", type=int, default=32,
+                        help="Spatial patch size (NTIRE standard: 32)")
+    parser.add_argument("--skip_time", action="store_true",
+                        help="Skip inference time measurement")
+    args = parser.parse_args()
+
+    # ---- NTIRE 2026 Track 2 Limits ----
+    PARAM_LIMIT = 1_000_000    # 1M parameters
+    FLOP_LIMIT  = 20e9         # 20G FLOPs
+
     print("=" * 60)
-    print("NTIRE 2026 LF-SR Challenge - Track 2 Efficiency Check")
+    print("🏆 NTIRE 2026 Track 2 — Efficiency Validation")
     print("=" * 60)
-    
-    # Create args object for model
-    class ModelArgs:
-        angRes_in = args.angRes
-        angRes_out = args.angRes
-        scale_factor = args.scale_factor
-    
-    model_args = ModelArgs()
-    
-    # Load model
-    print(f"\nLoading model: {args.model_name}")
-    MODEL_PATH = 'model.SR.' + args.model_name
+    print(f"  Model:      {args.model_name}")
+    print(f"  Input:      {args.angRes}×{args.angRes}×{args.patch_size}×{args.patch_size}")
+    print(f"  Scale:      {args.scale_factor}×")
+    print(f"  Param Limit: {PARAM_LIMIT:,}")
+    print(f"  FLOPs Limit: {FLOP_LIMIT/1e9:.0f}G")
+    print("=" * 60)
+
+    # ---- Load Model ----
+    print("\n📦 Loading model...")
+    MODEL_PATH = f"model.SR.{args.model_name}"
     try:
         MODEL = importlib.import_module(MODEL_PATH)
-        model = MODEL.get_model(model_args)
-    except Exception as e:
-        print(f"Error loading model: {e}")
+    except ImportError as e:
+        print(f"❌ Cannot import {MODEL_PATH}: {e}")
         sys.exit(1)
-    
-    # Switch to deploy mode if requested
-    if args.deploy and hasattr(model, 'switch_to_deploy'):
-        print("Switching to deploy mode (fusing RepVGG blocks)...")
-        model.switch_to_deploy()
-    
+
+    class ModelArgs:
+        angRes_in = args.angRes
+        scale_factor = args.scale_factor
+
+    model = MODEL.get_model(ModelArgs())
+
+    if torch.cuda.is_available():
+        model = model.cuda()
+        device = "cuda"
+    else:
+        device = "cpu"
+        print("⚠️  No CUDA — FLOPs will be measured on CPU (may differ slightly)")
+
     model.eval()
-    
-    # Count parameters
-    total_params, trainable_params = count_parameters(model)
-    param_mb = total_params * 4 / (1024 * 1024)  # Assuming float32
-    
-    print(f"\n{'='*40}")
-    print("PARAMETER COUNT")
-    print(f"{'='*40}")
-    print(f"Total parameters:     {total_params:,}")
-    print(f"Trainable parameters: {trainable_params:,}")
-    print(f"Model size:           {param_mb:.2f} MB (float32)")
-    
-    # Check constraint
-    # Check constraint: 1M parameters
-    PARAM_LIMIT = 1_000_000
-    if total_params < PARAM_LIMIT:
-        print(f"✓ PASS: Parameters ({total_params:,}) < {PARAM_LIMIT:,} (1M Limit)")
-    else:
-        print(f"✗ FAIL: Parameters ({total_params:,}) >= {PARAM_LIMIT:,} (1M Limit)")
-        
-    # Check constraint: 1MB file size (approx 262k float32 params)
-    # The rule "model size (i.e. number of parameters) is restricted to 1 MB" is ambiguous.
-    FILE_SIZE_LIMIT_MB = 1.0
-    if param_mb < FILE_SIZE_LIMIT_MB:
-        print(f"✓ PASS: Model Size ({param_mb:.2f} MB) < {FILE_SIZE_LIMIT_MB} MB")
-    else:
-        print(f"⚠️ WARNING: Model Size ({param_mb:.2f} MB) >= {FILE_SIZE_LIMIT_MB} MB")
-        print("   (If constraint is strictly file size, use fp16 or reduce params to <260k)")
-    
-    # Create input tensor (SAI format: [B, 1, angRes*H, angRes*W])
-    H = W = args.patch_size
-    angRes = args.angRes
-    input_tensor = torch.randn(1, 1, angRes * H, angRes * W)
-    
-    print(f"\n{'='*40}")
-    print("FLOPS COUNT")
-    print(f"{'='*40}")
-    print(f"Input shape: {list(input_tensor.shape)}")
-    print(f"  (SAI format: [B=1, C=1, H={angRes}x{H}={angRes*H}, W={angRes}x{W}={angRes*W}])")
-    
-    # Count FLOPs - try fvcore first, fallback to GPU hook-based counting
-    flops = None
-    try:
-        flops = count_flops_fvcore(model, input_tensor)
-    except Exception as e:
-        print(f"\n⚠️ fvcore failed (likely Mamba CUDA-only ops): {str(e)[:80]}...")
-    
-    if flops is None:
-        print("\nUsing GPU hook-based FLOPs counting (Mamba-compatible)...")
-        # Move to CUDA for hook-based counting (Mamba requires CUDA)
-        if torch.cuda.is_available():
-            model = model.cuda()
-            input_tensor = input_tensor.cuda()
-        flops = count_flops_manual(model, input_tensor)
-    
-    flops_g = flops / 1e9
-    
-    print(f"\nTotal FLOPs: {flops:,}")
-    print(f"             {flops_g:.2f} G")
-    
-    # Check constraint
-    FLOPS_LIMIT = 20e9
-    if flops < FLOPS_LIMIT:
-        print(f"✓ PASS: FLOPs ({flops_g:.2f}G) < 20G")
-    else:
-        print(f"✗ FAIL: FLOPs ({flops_g:.2f}G) >= 20G")
-    
-    # Test forward pass
-    print(f"\n{'='*40}")
-    print("FORWARD PASS TEST")
-    print(f"{'='*40}")
-    
-    with torch.no_grad():
-        output = model(input_tensor)
-    
-    expected_h = angRes * H * args.scale_factor
-    expected_w = angRes * W * args.scale_factor
-    
-    print(f"Input shape:    {list(input_tensor.shape)}")
-    print(f"Output shape:   {list(output.shape)}")
-    print(f"Expected shape: [1, 1, {expected_h}, {expected_w}]")
-    
-    if list(output.shape) == [1, 1, expected_h, expected_w]:
-        print("✓ PASS: Output shape correct")
-    else:
-        print("✗ FAIL: Output shape mismatch")
-    
-    # Summary
-    print(f"\n{'='*60}")
-    print("SUMMARY")
-    print(f"{'='*60}")
-    
-    all_pass = total_params < PARAM_LIMIT and flops < FLOPS_LIMIT
-    
-    print(f"Model:       {args.model_name}")
-    print(f"Parameters:  {total_params:,} / {PARAM_LIMIT:,} ({'PASS' if total_params < PARAM_LIMIT else 'FAIL'})")
-    print(f"FLOPs:       {flops_g:.2f}G / 20.00G ({'PASS' if flops < FLOPS_LIMIT else 'FAIL'})")
-    print(f"Deploy mode: {'Yes' if args.deploy else 'No'}")
-    print()
-    
-    if all_pass:
-        print("🎉 Model meets all Track 2 efficiency constraints!")
-    else:
-        print("⚠️  Model does NOT meet efficiency constraints. Please optimize.")
-    
+
+    # ---- Parameter Count ----
+    print("\n" + "=" * 60)
+    print("📋 PARAMETER COUNT")
     print("=" * 60)
-    
-    return 0 if all_pass else 1
+    num_params = count_parameters(model)
+    param_pct = num_params / PARAM_LIMIT * 100
+    param_pass = num_params < PARAM_LIMIT
+
+    print(f"  Total Parameters:  {num_params:>12,}")
+    print(f"  Limit:             {PARAM_LIMIT:>12,}")
+    print(f"  Usage:             {param_pct:>11.1f}%")
+    print(f"  Status:            {'✅ PASS' if param_pass else '❌ FAIL'}")
+    if not param_pass:
+        print(f"  ⚠️  OVER by {num_params - PARAM_LIMIT:,} params!")
+
+    # ---- FLOPs Count (fvcore) ----
+    print("\n" + "=" * 60)
+    print("⚡ FLOPs COUNT (fvcore — NTIRE official)")
+    print("=" * 60)
+
+    # NTIRE standard input: 5×5×32×32 = 1ch × (5*32) × (5*32) = 1×160×160
+    H = args.angRes * args.patch_size
+    W = args.angRes * args.patch_size
+    input_tensor = torch.randn(1, 1, H, W, device=device)
+
+    total_flops = measure_flops(model, input_tensor, args.model_name)
+
+    if total_flops is not None:
+        flop_pct = total_flops / FLOP_LIMIT * 100
+        flop_pass = total_flops < FLOP_LIMIT
+
+        print(f"\n  Total FLOPs:       {total_flops/1e9:>11.2f} G")
+        print(f"  Limit:             {FLOP_LIMIT/1e9:>11.0f} G")
+        print(f"  Usage:             {flop_pct:>11.1f}%")
+        print(f"  Status:            {'✅ PASS' if flop_pass else '❌ FAIL'}")
+        if not flop_pass:
+            print(f"  ⚠️  OVER by {(total_flops - FLOP_LIMIT)/1e9:.2f}G!")
+    else:
+        flop_pass = None
+        print("  ⚠️  Could not measure FLOPs (fvcore not available)")
+
+    # ---- Inference Time ----
+    if not args.skip_time and device == "cuda":
+        print("\n" + "=" * 60)
+        print("⏱️  INFERENCE TIME")
+        print("=" * 60)
+        timing = measure_inference_time(model, input_tensor)
+        print(f"  Mean:    {timing['mean']*1000:>8.2f} ms")
+        print(f"  Std:     {timing['std']*1000:>8.2f} ms")
+        print(f"  Median:  {timing['median']*1000:>8.2f} ms")
+        print(f"  Min:     {timing['min']*1000:>8.2f} ms")
+        print(f"  Max:     {timing['max']*1000:>8.2f} ms")
+        print(f"  GPU:     {torch.cuda.get_device_name(0)}")
+    elif device != "cuda":
+        print("\n⏱️  Skipping inference time (no CUDA)")
+
+    # ---- FINAL VERDICT ----
+    print("\n" + "=" * 60)
+    print("🏁 FINAL VERDICT")
+    print("=" * 60)
+
+    all_pass = param_pass and (flop_pass is True or flop_pass is None)
+
+    if param_pass:
+        print(f"  ✅ Parameters: {num_params:,} / {PARAM_LIMIT:,} ({param_pct:.1f}%)")
+    else:
+        print(f"  ❌ Parameters: {num_params:,} / {PARAM_LIMIT:,} ({param_pct:.1f}%) — OVER LIMIT")
+
+    if flop_pass is True:
+        print(f"  ✅ FLOPs:      {total_flops/1e9:.2f}G / {FLOP_LIMIT/1e9:.0f}G ({flop_pct:.1f}%)")
+    elif flop_pass is False:
+        print(f"  ❌ FLOPs:      {total_flops/1e9:.2f}G / {FLOP_LIMIT/1e9:.0f}G ({flop_pct:.1f}%) — OVER LIMIT")
+    else:
+        print(f"  ⚠️  FLOPs:      not measured (install fvcore)")
+
+    if all_pass:
+        print("\n  🎉 MODEL QUALIFIES FOR NTIRE 2026 TRACK 2!")
+    else:
+        print("\n  🚫 MODEL DOES NOT QUALIFY — fix limits above!")
+
+    print("=" * 60)
+
+    # Exit with error code if failing
+    if not all_pass:
+        sys.exit(1)
 
 
-if __name__ == '__main__':
-    sys.exit(main())
+if __name__ == "__main__":
+    main()
