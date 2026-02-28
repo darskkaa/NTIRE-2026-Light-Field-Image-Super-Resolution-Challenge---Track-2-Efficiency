@@ -55,9 +55,12 @@ else
     # --- Remove ALL old packages to prevent ABI mismatch ---
     info "Removing old PyTorch and mamba packages..."
     pip uninstall -y torch torchvision torchaudio mamba-ssm causal-conv1d 2>/dev/null || true
-    # Also remove the standalone .so that mamba-ssm installs at site-packages root
-    rm -f /venv/lfsr/lib/python*/site-packages/selective_scan_cuda*.so 2>/dev/null || true
-    rm -f /venv/lfsr/lib/python*/site-packages/causal_conv1d_cuda*.so 2>/dev/null || true
+    # Remove stale CUDA .so files that mamba-ssm/causal-conv1d install at site-packages root
+    find /venv/lfsr/lib/ -name "selective_scan_cuda*.so" -delete 2>/dev/null || true
+    find /venv/lfsr/lib/ -name "causal_conv1d_cuda*.so" -delete 2>/dev/null || true
+    find /venv/lfsr/lib/ -name "mamba_ssm*.so" -delete 2>/dev/null || true
+    # Purge pip's wheel cache to prevent reuse of ABI-incompatible cached wheels
+    pip cache purge 2>/dev/null || true
 
     info "Installing PyTorch nightly (cu128) for RTX 5090 Blackwell sm_120 support..."
     pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
@@ -66,16 +69,15 @@ else
     python -c "import torch; print(f'PyTorch {torch.__version__}'); print(f'CUDA archs: {torch.cuda.get_arch_list()}')"
 
     # --- Build causal-conv1d and mamba-ssm from source ---
-    # NOTE: Prebuilt wheels are compiled against PyTorch 2.4 and will cause
-    # "undefined symbol" errors at runtime with PyTorch nightly. We MUST
-    # build from source to match the installed PyTorch's C++ ABI.
+    # CRITICAL: --no-cache-dir prevents pip from reusing cached wheels that
+    # were compiled against an older PyTorch ABI (causes "undefined symbol" at runtime).
     info "Building causal-conv1d from source (~5 min)..."
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
-        pip install causal-conv1d==1.4.0 --no-build-isolation
+        pip install causal-conv1d==1.4.0 --no-build-isolation --no-cache-dir
 
     info "Building mamba-ssm from source (~10 min)..."
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
-        pip install mamba-ssm==2.2.2 --no-build-isolation
+        pip install mamba-ssm==2.2.2 --no-build-isolation --no-cache-dir
 fi
 
 info "Installing other dependencies..."
