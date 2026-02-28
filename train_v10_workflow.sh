@@ -39,7 +39,7 @@ info "Activating conda environment..."
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate lfsr
 
-if python -c "import mamba_ssm" &> /dev/null; then
+if python -c "from mamba_ssm.modules.mamba_simple import Mamba" &> /dev/null; then
     success "mamba-ssm is already installed in 'lfsr' environment! Skipping installation."
 else
     warn "mamba-ssm not found in environment. Installing (one-time only)..."
@@ -98,7 +98,7 @@ fi
 
 info "Verifying installations..."
 python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}')"
-python -c "from mamba_ssm import Mamba; print('mamba-ssm: OK')"
+python -c "from mamba_ssm.modules.mamba_simple import Mamba; print('mamba-ssm: OK')"
 python -c "from einops import rearrange; print('einops: OK')"
 success "Environment setup complete"
 
