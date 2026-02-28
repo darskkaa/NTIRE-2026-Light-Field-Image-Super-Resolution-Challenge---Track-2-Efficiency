@@ -46,20 +46,28 @@ else
     pip install "transformers<4.45.0"
 fi
 
-if python -c "from mamba_ssm.modules.mamba_simple import Mamba" &> /dev/null; then
-    success "mamba-ssm is already installed in 'lfsr' environment! Skipping installation."
+if python -c "from mamba_ssm.modules.mamba_simple import Mamba" &> /dev/null && \
+   python -c "import torch; assert 'sm_120' in torch.cuda.get_arch_list()" &> /dev/null; then
+    success "mamba-ssm is already installed and PyTorch supports sm_120! Skipping installation."
 else
-    warn "mamba-ssm not found in environment. Installing (one-time only)..."
+    warn "Missing mamba-ssm or PyTorch lacks sm_120 support. Installing..."
 
-    info "Installing PyTorch 2.4.0 (cu121)..."
-    pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+    info "Removing old PyTorch (if any) to avoid 'already satisfied' skips..."
+    pip uninstall -y torch torchvision torchaudio 2>/dev/null || true
+
+    info "Installing PyTorch nightly (cu128) for RTX 5090 Blackwell sm_120 support..."
+    pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
     # --- Auto-detect Python version and CXX11 ABI for wheel selection ---
     PYVER=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
     CXX_ABI=$(python -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')")
     info "Detected: Python=${PYVER}, CXX11_ABI=${CXX_ABI}"
 
-    # Verified wheel URLs from GitHub Releases API (cu122 tag, not cu12)
+    # Detect installed torch version for wheel matching
+    TORCH_VER=$(python -c "import torch; v=torch.__version__.split('+')[0].split('.')[:2]; print(f'{v[0]}.{v[1]}')")
+    info "Detected PyTorch version: ${TORCH_VER}"
+
+    # Try prebuilt wheels first (cu122/torch2.4 — may not match nightly)
     CAUSAL_WHL="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+cu122torch2.4cxx11abi${CXX_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
     MAMBA_WHL="https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu122torch2.4cxx11abi${CXX_ABI}-${PYVER}-${PYVER}-linux_x86_64.whl"
 
@@ -73,7 +81,7 @@ else
         if ! pip install "$ALT_WHL"; then
             warn "No prebuilt wheel found. Building from source (~5 min)..."
             # Override CUDA version check so nvcc 13.0 doesn't block the build
-            TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0" MAX_JOBS=4 \
+            TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
                 pip install causal-conv1d==1.4.0 --no-build-isolation
         fi
     fi
@@ -86,7 +94,7 @@ else
         warn "Primary wheel failed. Trying alternate ABI (${OTHER_ABI})..."
         if ! pip install "$ALT_WHL"; then
             warn "No prebuilt wheel found. Building from source (~10 min)..."
-            TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0" MAX_JOBS=4 \
+            TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" MAX_JOBS=4 \
                 pip install mamba-ssm==2.2.2 --no-build-isolation
         fi
     fi
