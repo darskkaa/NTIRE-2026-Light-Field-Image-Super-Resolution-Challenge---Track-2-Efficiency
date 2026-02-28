@@ -31,8 +31,8 @@ info "Starting workflow for V10 SOTA Architecture..."
 header "📦 STEP 1: VM Environment Setup"
 
 if ! conda env list | grep -q "lfsr"; then
-    info "Creating conda environment 'lfsr'..."
-    conda create -n lfsr python=3.10 -y
+    info "Creating conda environment 'lfsr' (Python 3.12)..."
+    conda create -n lfsr python=3.12 -y
 fi
 
 info "Activating conda environment..."
@@ -43,18 +43,27 @@ if python -c "import mamba_ssm" &> /dev/null; then
     success "mamba-ssm is already installed in 'lfsr' environment! Skipping installation."
 else
     warn "mamba-ssm not found in environment. Installing (one-time only)..."
-    
+
     info "Installing PyTorch 2.4.0 (cu121)..."
     pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
 
-    info "Installing mamba-ssm via pre-built wheels (no compilation needed)..."
-    # Download pre-built wheels directly from GitHub releases.
-    # This avoids the CUDA 13.0 vs 12.1 mismatch that blocks source compilation.
-    CAUSAL_CONV1D_WHL="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+cu12torch2.4cxx11abiTRUE-cp310-cp310-linux_x86_64.whl"
-    MAMBA_SSM_WHL="https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu12torch2.4cxx11abiTRUE-cp310-cp310-linux_x86_64.whl"
+    info "Installing mamba-ssm via pre-built wheels (Python 3.12 + CUDA 12 + PyTorch 2.4)..."
+    # Prebuilt wheels for cp312 (Python 3.12), cu12, torch2.4, cxx11abiTRUE
+    # System NVCC is CUDA 13.0 but PyTorch was built with CUDA 12.1 → use cu12 wheels.
+    CAUSAL_CONV1D_WHL="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+cu12torch2.4cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+    MAMBA_SSM_WHL="https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu12torch2.4cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
 
-    pip install "$CAUSAL_CONV1D_WHL"
-    pip install "$MAMBA_SSM_WHL"
+    info "Trying prebuilt causal-conv1d wheel..."
+    if ! pip install "$CAUSAL_CONV1D_WHL"; then
+        warn "Prebuilt causal-conv1d wheel not found. Building from source (slow, ~5 min)..."
+        MAX_JOBS=4 pip install causal-conv1d --no-build-isolation
+    fi
+
+    info "Trying prebuilt mamba-ssm wheel..."
+    if ! pip install "$MAMBA_SSM_WHL"; then
+        warn "Prebuilt mamba-ssm wheel not found. Building from source (slow, ~10 min)..."
+        MAX_JOBS=4 pip install mamba-ssm --no-build-isolation
+    fi
 
     info "Installing other dependencies..."
     pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib
