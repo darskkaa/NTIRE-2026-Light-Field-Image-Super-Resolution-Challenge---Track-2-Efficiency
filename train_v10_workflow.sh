@@ -49,8 +49,12 @@ else
     pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
 
     info "Installing mamba-ssm (REQUIRED)..."
-    pip install causal-conv1d>=1.1.0 mamba-ssm --force-reinstall --no-cache-dir --no-binary mamba-ssm,causal-conv1d
-
+    # Pre-install build dependencies so we can use --no-build-isolation
+    pip install packaging wheel ninja
+    # Use --no-build-isolation so it uses the torch==2.4.0 we just installed.
+    # This allows setup.py to correctly guess and download the pre-built wheel for torch 2.4 
+    # instead of downloading PyTorch 2.10 in an isolated environment and trying to compile.
+    pip install causal-conv1d>=1.4.0 mamba-ssm --no-build-isolation --no-cache-dir
     info "Installing other dependencies..."
     pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib
 fi
