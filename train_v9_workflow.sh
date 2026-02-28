@@ -30,29 +30,34 @@ info "Starting workflow for SOTA Architecture..."
 #===============================================================================
 header "📦 STEP 1: VM Environment Setup"
 
+if ! conda env list | grep -q "lfsr"; then
+    info "Creating conda environment 'lfsr'..."
+    conda create -n lfsr python=3.10 -y
+fi
+
+info "Activating conda environment..."
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate lfsr
+
 if python -c "import mamba_ssm" &> /dev/null; then
-    success "mamba-ssm is already installed!"
+    success "mamba-ssm is already installed in 'lfsr' environment! Skipping installation."
 else
-    warn "mamba-ssm not found. Setting up environment..."
+    warn "mamba-ssm not found in environment. Installing (one-time only)..."
     
-    if ! conda env list | grep -q "lfsr"; then
-        info "Creating conda environment 'lfsr'..."
-        conda create -n lfsr python=3.10 -y
-    fi
-
-    info "Activating conda environment..."
-    source $(conda info --base)/etc/profile.d/conda.sh
-    conda activate lfsr
-
-    info "Installing PyTorch 2.4.0 (Stable)..."
-    pip uninstall -y torch torchvision torchaudio mamba-ssm causal-conv1d
+    info "Installing PyTorch 2.4.0 (cu121)..."
     pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
 
-    info "Installing mamba-ssm (REQUIRED)..."
-    pip install causal-conv1d>=1.1.0 mamba-ssm --force-reinstall --no-cache-dir --no-binary mamba-ssm,causal-conv1d
+    info "Installing mamba-ssm via pre-built wheels (no compilation needed)..."
+    CAUSAL_CONV1D_WHL="https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/causal_conv1d-1.4.0+cu12torch2.4cxx11abiTRUE-cp310-cp310-linux_x86_64.whl"
+    MAMBA_SSM_WHL="https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu12torch2.4cxx11abiTRUE-cp310-cp310-linux_x86_64.whl"
+
+    pip install "$CAUSAL_CONV1D_WHL"
+    pip install "$MAMBA_SSM_WHL"
 
     info "Installing other dependencies..."
     pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib
+
+    success "All packages installed! This won't run again on future executions."
 fi
 
 info "Verifying installations..."
