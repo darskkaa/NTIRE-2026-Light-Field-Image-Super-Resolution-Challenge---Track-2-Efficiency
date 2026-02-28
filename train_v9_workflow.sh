@@ -39,6 +39,9 @@ info "Activating conda environment..."
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate lfsr
 
+info "Ensuring compatible transformers version for mamba-ssm..."
+pip install "transformers<4.45.0"
+
 if python -c "import mamba_ssm" &> /dev/null; then
     success "mamba-ssm is already installed in 'lfsr' environment! Skipping installation."
 else
@@ -55,7 +58,7 @@ else
     pip install "$MAMBA_SSM_WHL"
 
     info "Installing other dependencies..."
-    pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib
+    pip install numpy scipy h5py imageio einops xlwt tqdm scikit-image fvcore matplotlib gdown
 
     success "All packages installed! This won't run again on future executions."
 fi
