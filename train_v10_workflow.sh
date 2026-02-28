@@ -161,14 +161,14 @@ if [ -n "$(find data_for_training -name "*.h5" | head -1)" ]; then
     success "Training data (.h5) already exists. Skipping generation."
 else
     info "Generating SR_5x5_4x training patches..."
-    python Generate_Data_for_Training.py --angRes 5 --scale_factor 4 --src_data_path ./datasets/ --save_data_path ./data_for_training/
+    python Generate_Data_for_Training.py --angRes 5 --scale_factor 4 --src_data_path ./datasets/ --save_data_path ./
 fi
 
 if [ -n "$(find data_for_test -name "*.h5" | head -1)" ]; then
     success "Test data (.h5) already exists."
 else
     info "Generating SR_5x5_4x test patches..."
-    python Generate_Data_for_Test.py --angRes 5 --scale_factor 4 --src_data_path ./datasets/ --save_data_path ./data_for_test/
+    python Generate_Data_for_Test.py --angRes 5 --scale_factor 4 --src_data_path ./datasets/ --save_data_path ./
 fi
 
 success "Data generation complete"
