@@ -43,14 +43,18 @@ else
     info "Downloaded files:"
     ls -la downloads/
 
-    # Extract the zips into datasets/
-    if [ -f "downloads/NTIRE_Val_Real.zip" ]; then
-        info "Extracting NTIRE_Val_Real.zip..."
-        unzip -o -q downloads/NTIRE_Val_Real.zip -d datasets/
+    # Find and extract the zips into datasets/
+    # gdown folder download usually creates a subfolder matching the drive folder name
+    REAL_ZIP=$(find downloads -name "NTIRE_Val_Real.zip" | head -n 1)
+    SYNTH_ZIP=$(find downloads -name "NTIRE_Val_Synth.zip" | head -n 1)
+
+    if [ -n "$REAL_ZIP" ]; then
+        info "Extracting $REAL_ZIP..."
+        unzip -o -q "$REAL_ZIP" -d datasets/
     fi
-    if [ -f "downloads/NTIRE_Val_Synth.zip" ]; then
-        info "Extracting NTIRE_Val_Synth.zip..."
-        unzip -o -q downloads/NTIRE_Val_Synth.zip -d datasets/
+    if [ -n "$SYNTH_ZIP" ]; then
+        info "Extracting $SYNTH_ZIP..."
+        unzip -o -q "$SYNTH_ZIP" -d datasets/
     fi
 
     # Verify
