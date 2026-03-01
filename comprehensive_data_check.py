@@ -137,7 +137,7 @@ def main():
         train_datasets = [d for d in train_path.iterdir() if d.is_dir()]
         train_h5_files = []
         for d in train_datasets:
-            files = list(d.glob('*.h5'))
+            files = list(d.rglob('*.h5'))
             train_h5_files.extend(files)
             print_status(f"Found {len(files):5d} patches in {d.name}", "INFO")
 
@@ -171,7 +171,7 @@ def main():
         test_datasets = [d for d in test_path.iterdir() if d.is_dir()]
         test_h5_files = []
         for d in test_datasets:
-            files = list(d.glob('*.h5'))
+            files = list(d.rglob('*.h5'))
             test_h5_files.extend(files)
             print_status(f"Found {len(files):5d} images in {d.name}", "INFO")
 
