@@ -32,8 +32,8 @@ import random
 # ============================================================================
 # Configuration
 # ============================================================================
-EXPECTED_REAL_SCENES = 8
-EXPECTED_SYNTH_SCENES = 8
+EXPECTED_REAL_SCENES = 16
+EXPECTED_SYNTH_SCENES = 16
 EXPECTED_VIEWS_PER_SCENE = 25  # 5x5 angular resolution
 EXPECTED_VIEW_NAMES = [f"View_{i}_{j}.bmp" for i in range(5) for j in range(5)]
 
