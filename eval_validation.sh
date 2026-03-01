@@ -2,31 +2,20 @@
 #===============================================================================
 # NTIRE 2026 LF-SR Track 2 — VALIDATION SUBMISSION PIPELINE
 #===============================================================================
-# Generates a valid submission zip from NTIRE validation data.
+# Downloads NTIRE Val data, runs inference, formats submission zip.
 #
-# Expected NTIRE validation data structure (from Google Drive):
-#   datasets/
-#   ├── NTIRE_Val_Real/inference/   ← 16 .mat files (Real scenes)
-#   └── NTIRE_Val_Synth/inference/  ← 16 .mat files (Synth scenes)
+# Google Drive folder contains:
+#   NTIRE_Val_Real.zip  → NTIRE_Val_Real/inference/ (16 .mat files)
+#   NTIRE_Val_Synth.zip → NTIRE_Val_Synth/inference/ (16 .mat files: 01-16)
 #
-# Output: submission_MyEfficientLFNetV10.zip
-#   ├── Real/
-#   │   ├── 01/ (25 BMPs: View_0_0.bmp ... View_4_4.bmp)
-#   │   ├── 02/
-#   │   └── ... (16 scene folders)
-#   └── Synth/
-#       ├── 01/
-#       └── ... (16 scene folders)
+# Final submission zip:
+#   Real/<scene_name>/View_0_0.bmp ... View_4_4.bmp  (16 scenes)
+#   Synth/<scene_name>/View_0_0.bmp ... View_4_4.bmp (16 scenes)
 #===============================================================================
 
 set -e
 
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
+GREEN='\033[0;32m'; BLUE='\033[0;34m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 info()    { echo -e "\n${BLUE}[INFO]${NC} $1"; }
 success() { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -35,65 +24,56 @@ error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 MODEL="MyEfficientLFNetV10"
 
 #===============================================================================
-# STEP 1: Download NTIRE Validation Data
+# STEP 1: Download & Extract NTIRE Validation Data
 #===============================================================================
 info "=== STEP 1: Download NTIRE Validation Data ==="
 
 pip install gdown 2>/dev/null || true
-
-mkdir -p datasets/NTIRE_Val_Real/inference datasets/NTIRE_Val_Synth/inference downloads
+mkdir -p downloads datasets
 
 REAL_COUNT=$(find datasets/NTIRE_Val_Real/inference -name "*.mat" 2>/dev/null | wc -l)
 SYNTH_COUNT=$(find datasets/NTIRE_Val_Synth/inference -name "*.mat" 2>/dev/null | wc -l)
 
-if [ "$REAL_COUNT" -ge 1 ] && [ "$SYNTH_COUNT" -ge 1 ]; then
+if [ "$REAL_COUNT" -ge 16 ] && [ "$SYNTH_COUNT" -ge 16 ]; then
     success "Validation data already present (${REAL_COUNT} Real, ${SYNTH_COUNT} Synth)."
 else
-    info "Downloading from Google Drive..."
-    gdown --folder "https://drive.google.com/drive/folders/1LfPTTTtTDOPyNg3D-B_RfzwBZd4D0-HH" -O downloads/NTIRE_Val
+    info "Downloading validation zips from Google Drive..."
+    gdown --folder "https://drive.google.com/drive/folders/1LfPTTTtTDOPyNg3D-B_RfzwBZd4D0-HH" -O downloads/
 
-    info "Downloaded contents:"
-    find downloads/NTIRE_Val -type f | sort
+    info "Downloaded files:"
+    ls -la downloads/
 
-    # Auto-organize: try multiple possible folder structures
-    # Case 1: NTIRE_Val_Real / NTIRE_Val_Synth subfolders
-    for src in downloads/NTIRE_Val/NTIRE_Val_Real downloads/NTIRE_Val/Real; do
-        [ -d "$src" ] && find "$src" -name "*.mat" -exec cp {} datasets/NTIRE_Val_Real/inference/ \;
-    done
-    for src in downloads/NTIRE_Val/NTIRE_Val_Synth downloads/NTIRE_Val/Synth; do
-        [ -d "$src" ] && find "$src" -name "*.mat" -exec cp {} datasets/NTIRE_Val_Synth/inference/ \;
-    done
+    # Extract the zips into datasets/
+    if [ -f "downloads/NTIRE_Val_Real.zip" ]; then
+        info "Extracting NTIRE_Val_Real.zip..."
+        unzip -o -q downloads/NTIRE_Val_Real.zip -d datasets/
+    fi
+    if [ -f "downloads/NTIRE_Val_Synth.zip" ]; then
+        info "Extracting NTIRE_Val_Synth.zip..."
+        unzip -o -q downloads/NTIRE_Val_Synth.zip -d datasets/
+    fi
 
-    # Case 2: Flat .mat files with Real/Synth in filename
-    find downloads/NTIRE_Val -maxdepth 1 -name "*Real*" -name "*.mat" -exec cp {} datasets/NTIRE_Val_Real/inference/ \; 2>/dev/null || true
-    find downloads/NTIRE_Val -maxdepth 1 -name "*Synth*" -name "*.mat" -exec cp {} datasets/NTIRE_Val_Synth/inference/ \; 2>/dev/null || true
-
+    # Verify
     REAL_COUNT=$(find datasets/NTIRE_Val_Real/inference -name "*.mat" 2>/dev/null | wc -l)
     SYNTH_COUNT=$(find datasets/NTIRE_Val_Synth/inference -name "*.mat" 2>/dev/null | wc -l)
-    info "After organizing: ${REAL_COUNT} Real, ${SYNTH_COUNT} Synth .mat files"
+    info "Found: ${REAL_COUNT} Real .mat, ${SYNTH_COUNT} Synth .mat"
 
-    if [ "$REAL_COUNT" -eq 0 ] && [ "$SYNTH_COUNT" -eq 0 ]; then
-        warn "Auto-sort couldn't find .mat files. Listing what was downloaded:"
-        find downloads/NTIRE_Val -type f
-        warn "Please manually place .mat files into:"
-        warn "  datasets/NTIRE_Val_Real/inference/"
-        warn "  datasets/NTIRE_Val_Synth/inference/"
-        error "Cannot continue without validation data."
+    if [ "$REAL_COUNT" -eq 0 ] || [ "$SYNTH_COUNT" -eq 0 ]; then
+        error "Missing validation data! Check downloads/ and manually extract."
     fi
 fi
 
-info "Real .mat files:"
-ls datasets/NTIRE_Val_Real/inference/
-info "Synth .mat files:"
-ls datasets/NTIRE_Val_Synth/inference/
+info "Real scenes:"; ls datasets/NTIRE_Val_Real/inference/
+info "Synth scenes:"; ls datasets/NTIRE_Val_Synth/inference/
 
 #===============================================================================
-# STEP 2: Generate Test Patches (h5 files for dataloader)
+# STEP 2: Generate h5 patches for the dataloader
 #===============================================================================
 info "=== STEP 2: Generate Test Patches ==="
 
-# Generate_Validation_Data.py processes NTIRE_Val_Real and NTIRE_Val_Synth
-# and saves h5 files to data_for_inference/SR_5x5_4x/NTIRE_Val_Real/ etc.
+# Clear old inference data to avoid mixing with training datasets
+rm -rf data_for_inference/SR_5x5_4x/NTIRE_Val_Real data_for_inference/SR_5x5_4x/NTIRE_Val_Synth
+
 python Generate_Validation_Data.py \
     --angRes 5 \
     --scale_factor 4 \
@@ -101,22 +81,23 @@ python Generate_Validation_Data.py \
     --src_data_path ./datasets/ \
     --save_data_path ./
 
-success "Test patches generated in data_for_inference/SR_5x5_4x/"
+success "Patches generated:"
 ls data_for_inference/SR_5x5_4x/
 
 #===============================================================================
-# STEP 3: Run Inference (ONLY on NTIRE validation data)
+# STEP 3: Clear old results & Run Inference on NTIRE validation ONLY
 #===============================================================================
 info "=== STEP 3: Run Inference ==="
 
 BEST_CKPT=$(ls -t log/SR_5x5_4x/ALL/$MODEL/checkpoints/*.pth 2>/dev/null | head -1)
-if [ -z "$BEST_CKPT" ]; then
-    error "No checkpoint found for $MODEL!"
-fi
-info "Using checkpoint: $BEST_CKPT"
+[ -z "$BEST_CKPT" ] && error "No checkpoint found for $MODEL!"
+info "Checkpoint: $BEST_CKPT"
 
-# CRITICAL: --path_for_test points to data_for_inference/ (NOT data_for_test/)
-# This ensures we only process the NTIRE validation scenes
+# IMPORTANT: Clear previous results to avoid mixing with standard datasets
+rm -rf log/SR_5x5_4x/ALL/$MODEL/results/TEST
+info "Cleared old results."
+
+# --path_for_test = data_for_inference/ (ONLY contains NTIRE val data)
 python inference.py \
     --model_name "$MODEL" \
     --angRes 5 \
@@ -132,32 +113,26 @@ success "Inference complete!"
 #===============================================================================
 # STEP 4: Format into Real/ + Synth/ and Validate
 #===============================================================================
-info "=== STEP 4: Format & Validate ==="
+info "=== STEP 4: Format & Validate Submission ==="
 
 RESULTS_DIR="log/SR_5x5_4x/ALL/$MODEL/results/TEST"
 ZIP_NAME="submission_${MODEL}.zip"
 
-if [ ! -d "$RESULTS_DIR" ]; then
-    error "Results directory not found: $RESULTS_DIR"
-fi
+[ ! -d "$RESULTS_DIR" ] && error "Results dir not found: $RESULTS_DIR"
 
-info "Inference output:"
-ls "$RESULTS_DIR"
+info "Result scenes:"
 for d in "$RESULTS_DIR"/*/; do
     scene=$(basename "$d")
     count=$(find "$d" -name "*.bmp" | wc -l)
-    echo "  $scene: $count BMPs"
+    echo "  $scene/ → $count BMPs"
 done
 
-# format_submission.py maps NTIRE_Val_Real → Real/, NTIRE_Val_Synth → Synth/
+# NTIRE_Val_Real → Real/, NTIRE_Val_Synth → Synth/
 python format_submission.py "$RESULTS_DIR" --output "$ZIP_NAME"
-
-# Validate the zip
 python validate_submission.py "$ZIP_NAME"
 
 echo ""
-echo -e "${GREEN}============================================================${NC}"
-echo -e "${GREEN}🚀 SUBMISSION READY: ${ZIP_NAME}${NC}"
-echo -e "${GREEN}============================================================${NC}"
-echo ""
-echo "Upload $ZIP_NAME to CodaBench!"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}🚀 READY: ${ZIP_NAME}${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo "Upload to CodaBench!"
