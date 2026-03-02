@@ -53,22 +53,46 @@ def main(args):
     else:
         ckpt_path = args.path_pre_pth
         checkpoint = torch.load(ckpt_path, map_location='cpu')
-        try:
-            new_state_dict = OrderedDict()
-            for k, v in checkpoint['state_dict'].items():
-                name = 'module.' + k  # add `module.`
-                new_state_dict[name] = v
-            # load params
-            net.load_state_dict(new_state_dict)
-            print('Use pretrain model!')
-        except (RuntimeError, KeyError):
-            new_state_dict = OrderedDict()
-            for k, v in checkpoint['state_dict'].items():
-                new_state_dict[k] = v
-            # load params
-            net.load_state_dict(new_state_dict)
-            print('Use pretrain model!')
-            pass
+
+        # First, always load the full state_dict (includes ALL params + buffers)
+        full_state = checkpoint['state_dict']
+
+        # BUG-1 FIX: Prefer EMA weights for inference.
+        # train_mlfim.py saves 'ema_state_dict' which contains only parameters
+        # (not buffers like Sobel kernels, RPB indices, etc.). So we first load
+        # the full state_dict to populate buffers, then overlay EMA param values.
+        has_ema = 'ema_state_dict' in checkpoint and len(checkpoint['ema_state_dict']) > 0
+
+        def _load_state_flexible(net, state):
+            """Try loading state_dict with and without 'module.' prefix."""
+            try:
+                sd = OrderedDict()
+                for k, v in state.items():
+                    sd['module.' + k] = v
+                net.load_state_dict(sd)
+            except (RuntimeError, KeyError):
+                sd = OrderedDict()
+                for k, v in state.items():
+                    sd[k] = v
+                net.load_state_dict(sd)
+
+        # Load full state_dict (gets all buffers + parameters)
+        _load_state_flexible(net, full_state)
+
+        # Overlay EMA parameter values if available
+        if has_ema:
+            ema_state = checkpoint['ema_state_dict']
+            model_params = dict(net.named_parameters())
+            ema_applied = 0
+            for name, ema_val in ema_state.items():
+                if name in model_params:
+                    model_params[name].data.copy_(ema_val)
+                    ema_applied += 1
+            print(f'Using EMA weights for inference ({ema_applied} params overlaid).')
+        else:
+            print('No EMA weights found, using online model weights.')
+
+        print('Loaded pretrain model!')
         pass
 
     net = net.to(device)
