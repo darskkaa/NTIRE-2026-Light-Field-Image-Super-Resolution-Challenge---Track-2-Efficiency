@@ -1,0 +1,247 @@
+# LFMamba — Complete Training Pipeline Analysis
+
+## Overview
+
+LFMamba is a Light Field Image Super-Resolution model using State Space Models (Mamba/S4). The full pipeline spans **data generation → training → testing/inference**.
+
+---
+
+## 1. Environment & Dependencies
+
+| Dependency | Version |
+|---|---|
+| PyTorch | 1.13.0 |
+| TorchVision | 0.13.0 |
+| Python | 3.10 |
+| CUDA | 11.7 |
+| causal-conv1d | 1.1.1 |
+| mamba-ssm | 1.1.2 |
+
+---
+
+## 2. Data Pipeline
+
+### 2.1 Datasets
+
+Five LF benchmarks from [BasicLFSR](https://github.com/ZhengyuLiang24/BasicLFSR):
+- **EPFL**, **HCI_new**, **HCI_old**, **INRIA_Lytro**, **Stanford_Gantry**
+
+Raw data is expected in `./datasets/{DatasetName}/{training|test}/`
+
+### 2.2 Training Data Generation — [Generate_Data_for_Training.py](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/Generate_Data_for_Training.py)
+
+| Parameter | Default |
+|---|---|
+| `angRes` | 5 |
+| `scale_factor` | 2 (supports 2 or 4) |
+| `patch_size` | 16 (in LR space) |
+
+**Process:**
+1. Loads each scene from `.h5` or `.mat` files
+2. Extracts central `5×5` angular views
+3. Converts RGB → YCbCr, keeps only **Y channel**
+4. Crops HR patches of size `scale_factor × patch_size` (e.g., 32 for 2×, 64 for 4×)
+5. Stride = `patchsize // 2` (50% overlap)
+6. Downsamples HR → LR using `imresize` (MATLAB-style bicubic)
+7. Arranges as **SAI (Sub-Aperture Image)** layout: all views interleaved into [(U × patch_h, V × patch_w)](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/LFMamba.py#461-525)
+8. Saves each patch pair to individual `.h5` files with keys `Lr_SAI_y` and `Hr_SAI_y`
+9. Output directory: `./data_for_training/SR_5x5_{scale}x_{patch_size}/`
+
+### 2.3 Test Data Generation — [Generate_Data_for_Test.py](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/Generate_Data_for_Test.py)
+
+- Same angular extraction and color conversion
+- **No patching** — saves full-resolution scenes
+- Additionally saves `Sr_SAI_cbcr` (upsampled CbCr for RGB reconstruction)
+- Output: `./data_for_test/SR_5x5_{scale}x/{DatasetName}/`
+
+### 2.4 Data Augmentation — [augmentation](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/utils/utils.py#L14-L24)
+
+Three random augmentations (each 50% probability):
+1. **Flip W-V** (horizontal)
+2. **Flip H-U** (vertical)
+3. **Transpose U-V ↔ H-W** (90° rotation that also swaps angular dimensions)
+
+### 2.5 DataLoaders
+
+| Loader | Batch Size | Workers | Shuffle |
+|---|---|---|---|
+| [TrainSetLoader](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/utils/utils.py#100-126) | **4** | 8 | ✅ |
+| [TestSetDataLoader](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/utils/utils.py#140-164) | 1 | 0 | ❌ |
+
+---
+
+## 3. Model Architecture — [LFMamba.py](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/LFMamba.py)
+
+### 3.1 High-Level Structure ([Net](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/LFMamba.py#461-525) class)
+
+```
+Input: (B, 1, U*H, V*W)  →  rearrange to (B, 1, U, V, H, W)
+  │
+  ├─ Bicubic Upsampling (skip connection for global residual)
+  │
+  ├─ Initial Feature Extraction (3D Conv)
+  │     conv_init0: Conv3d(1 → 64, kernel=(1,3,3))
+  │     conv_init:  3× [Conv3d(64→64, (1,3,3)) + LeakyReLU(0.2)]
+  │     + residual connection
+  │
+  ├─ Deep Spatial-Angular Correlation Learning
+  │     altblock: 3× SpaAngFilter  (+residual)
+  │     epiblock: 3× EPISSM         (+residual)
+  │     → concat [buffer_init, buffer_1, buffer_2]  → 3×channels
+  │
+  └─ Upsampling Head
+        Conv2d(64*3 → 64*scale², kernel=1)
+        PixelShuffle(scale)
+        LeakyReLU(0.2)
+        Conv2d(64 → 1, kernel=3)
+        + bicubic residual
+```
+
+### 3.2 Key Components
+
+| Component | Description |
+|---|---|
+| **SpaSSM** | Spatial SSM — processes each view independently: [(B*A, C, H, W)](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/LFMamba.py#461-525) |
+| **AngSSM** | Angular SSM — processes angular dims per spatial position: [(B*H*W, C, U, V)](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/LFMamba.py#461-525) |
+| **EPISSM** | EPI SSM — processes epipolar plane images in both directions (horizontal then vertical EPI) |
+| **SpaAngFilter** | Sequential Spatial → Angular SSM block |
+| **ESS2D** | Efficient Selective Scan 2D — core Mamba block with 4-directional scanning (HW, WH, HW-reverse, WH-reverse), channel-split approach (K=1 projection) |
+| **VSSBlock** | VSS block with LayerNorm, ESS2D, DropPath, skip scale, and CAB (Channel Attention Block) |
+| **CAB** | Conv-based Channel Attention: Conv→GELU→Conv→ChannelAttention(squeeze=30) |
+| **ResidualGroup** | BasicLayer (stack of VSSBlocks) + Conv residual connection |
+
+### 3.3 ESS2D (Efficient SS2D) Hyperparameters
+
+| Parameter | Value |
+|---|---|
+| `d_state` | 16 |
+| `d_conv` | 3 |
+| `expand` | 2.0 |
+| `dt_rank` | auto (`ceil(d_model/16)`) |
+| [dt_init](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/LFMamba.py#125-152) | random |
+| `dt_min / dt_max` | 0.001 / 0.1 |
+| Scanning directions | 4 (HW, WH, HW-reversed, WH-reversed) via channel split |
+
+### 3.4 Model Size
+
+| Scale | Params | FLOPs (on 160×160 input) |
+|---|---|---|
+| 2× | **~2.15M** | **~62.95G** |
+| 4× | ~2.3M | ~66.90G |
+
+---
+
+## 4. Training Configuration — [train.py](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/train.py)
+
+### 4.1 All Hyperparameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `device` | `cuda:0` | Training device |
+| `angRes` | 5 | Angular resolution (5×5 views) |
+| `upscale_factor` | 4 | SR scale factor |
+| `batch_size` | **4** | Training batch size |
+| `lr` | **2e-4** | Initial learning rate |
+| `n_epochs` | **60** | Total training epochs |
+| `n_steps` | **15** | LR decay step interval |
+| `gamma` | **0.5** | LR decay factor |
+| `patchsize` | 32 | Validation patch size |
+| `stride` | 16 | Validation patch stride |
+| `channels` | **64** | Model channel width |
+| `parrallel` | 0 | Multi-GPU (0=off) |
+
+### 4.2 Loss Function
+
+**L1 Loss** (Mean Absolute Error) — `torch.nn.L1Loss()`
+
+### 4.3 Optimizer
+
+**Adam** with default betas (0.9, 0.999)
+```python
+optimizer = torch.optim.Adam(
+    [p for p in net.parameters() if p.requires_grad],
+    lr=2e-4
+)
+```
+
+### 4.4 Learning Rate Schedule
+
+**StepLR** — decays by `gamma=0.5` every `n_steps=15` epochs:
+
+| Epochs | Learning Rate |
+|---|---|
+| 1–15 | 2e-4 |
+| 16–30 | 1e-4 |
+| 31–45 | 5e-5 |
+| 46–60 | 2.5e-5 |
+
+### 4.5 Training Loop Details
+
+1. **Seed**: Fixed at `1` (torch, cuda, numpy, random, deterministic cuDNN)
+2. **No gradient clipping**
+3. **No mixed precision** (full fp32)
+4. **No weight initialization** ([weights_init](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/LFMamba.py#544-546) is a no-op pass)
+5. **Logging**: TensorBoard via `tensorboardX`
+6. **Checkpoints**: Saved every epoch to `./log/{model_name}/`
+7. **Validation**: Run after every epoch on all 5 test datasets, reports per-dataset PSNR/SSIM and average
+8. **cuDNN benchmark**: Enabled (`cudnn.benchmark = True`)
+
+### 4.6 Training Data Format
+
+Input tensor: [(B, 1, angRes*H_lr, angRes*W_lr)](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/LFMamba.py#461-525) — single-channel Y luminance in SAI arrangement
+
+---
+
+## 5. Validation / Testing
+
+### 5.1 During Training — [valid](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/train.py#L156-L190)
+
+- Iterates over full-resolution test scenes
+- Divides LF into overlapping patches (`patchsize=32, stride=16`)
+- Processes each patch position independently (batch of 1)
+- Integrates overlapping output patches back
+- Computes per-view PSNR/SSIM, then averages
+
+### 5.2 Standalone Test — [test.py](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/test.py)
+
+Same patch-based inference as validation, plus:
+- Optional **TTA** (Test-Time Augmentation) with 8 geometric transforms
+- Saves output as `.mat` files in `./Results/`
+- Can then run [GenerateResultImages.py](file:///d:/DownloadsD/LFMamba-master/LFMamba-master/GenerateResultImages.py) to convert to RGB images
+
+### 5.3 Metrics
+
+| Metric | Implementation |
+|---|---|
+| **PSNR** | `skimage.metrics.peak_signal_noise_ratio` per view, then averaged |
+| **SSIM** | `skimage.metrics.structural_similarity` with `gaussian_weights=True, data_range=2` per view, then averaged |
+
+---
+
+## 6. Complete Pipeline Summary
+
+```mermaid
+flowchart TD
+    A[Raw LF Datasets<br/>EPFL, HCI_new, HCI_old,<br/>INRIA_Lytro, Stanford_Gantry] --> B[Generate_Data_for_Training.py]
+    A --> C[Generate_Data_for_Test.py]
+    B --> D[Training patches .h5<br/>Lr_SAI_y + Hr_SAI_y]
+    C --> E[Test scenes .h5<br/>Lr_SAI_y + Hr_SAI_y + Sr_SAI_cbcr]
+    D --> F[train.py<br/>Adam, lr=2e-4, batch=4<br/>L1 Loss, StepLR, 60 epochs]
+    F --> G[Checkpoints<br/>./log/LFMamba/]
+    G --> H[test.py<br/>Patch-based inference<br/>Optional 8× TTA]
+    E --> H
+    H --> I[Results .mat<br/>./Results/]
+    I --> J[GenerateResultImages.py<br/>RGB reconstruction]
+```
+
+---
+
+## 7. Key Design Choices
+
+1. **Y-channel only** — trains and evaluates on luminance; CbCr is bicubic-upsampled separately for final RGB
+2. **SAI layout** — all angular views interleaved in a single 2D tensor rather than separate view tensors
+3. **3D Conv IFE** — initial feature extraction uses Conv3d along angular dimension
+4. **Dual-branch deep features** — SpaAng (spatial+angular SSM) and EPI (epipolar SSM) branches, concatenated
+5. **Global residual** — bicubic upsampled input added to network output
+6. **PixelShuffle upsampling** — 1×1 conv to expand channels, then pixel shuffle
+7. **4-direction scanning via channel split** — ESS2D splits channels into 4 groups for HW/WH/reverse scanning directions (efficient: K=1 shared projection)
