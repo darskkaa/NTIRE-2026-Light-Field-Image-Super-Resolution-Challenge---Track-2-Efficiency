@@ -21,7 +21,7 @@ success() { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-MODEL="MyEfficientLFNetV10"
+MODEL="MyEfficientLFNetV10_MLFIM"
 
 #===============================================================================
 # STEP 1: Download & Extract NTIRE Validation Data
