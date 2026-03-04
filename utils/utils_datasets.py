@@ -176,5 +176,15 @@ def augmentation(data, label):
     if random.random() < 0.5:  # transpose between U-V and H-W
         data = data.transpose(1, 0)
         label = label.transpose(1, 0)
+    # Random gamma correction — simulates varying exposure/lighting.
+    # Applied to BOTH LR and HR so the target remains consistent.
+    # Helps the model generalize on real-world Lytro test images (different
+    # tonal distributions than synthetic training data).
+    # LR-only gamma is wrong — it changes the target mapping.
+    if random.random() < 0.3:  # 30% probability, conservative
+        gamma = random.uniform(0.7, 1.4)
+        # Clip to [0,1] after gamma to prevent overflow in float32 Y-channel
+        data = np.clip(np.power(np.clip(data, 1e-8, 1.0), gamma), 0.0, 1.0)
+        label = np.clip(np.power(np.clip(label, 1e-8, 1.0), gamma), 0.0, 1.0)
     return data, label
 

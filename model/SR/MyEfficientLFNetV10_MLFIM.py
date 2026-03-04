@@ -117,7 +117,12 @@ class get_model(nn.Module):
         # and ~1G FLOPs, freeing budget for ASG and LCE.
         self.conv_init0 = nn.Conv3d(1, C, kernel_size=(1, 3, 3),
                                     padding=(0, 1, 1), bias=False)
+        # V10.5: Restored to 3-layer IFE (V10.3 had 2, original LFMamba had 4).
+        # Extra refinement layer provides richer initial features for Mamba blocks.
+        # Cost: ~17K params, ~0.45G FLOPs. Budget: 573K/19.1G (within limits).
         self.conv_init = nn.Sequential(
+            nn.Conv3d(C, C, kernel_size=(1, 3, 3), padding=(0, 1, 1), bias=False),
+            nn.LeakyReLU(0.2, inplace=True),
             nn.Conv3d(C, C, kernel_size=(1, 3, 3), padding=(0, 1, 1), bias=False),
             nn.LeakyReLU(0.2, inplace=True),
         )
@@ -1146,26 +1151,38 @@ class get_loss(nn.Module):
         return (w * freq_dist_sq).mean().sqrt()
 
     def ssim_loss(self, p, t):
-        p, t = p.float(), t.float()  # CRITICAL: bfloat16 squaring causes variance underflow
+        """Per-view SSIM loss — avoids window crossing SAI view boundaries."""
+        p, t = p.float(), t.float()
+        B, C, H, W = p.shape
+        a = self.angRes
+        # Reshape to per-view: (B*a*a, 1, h, w)
+        p_views = rearrange(p, 'b c (u h) (v w) -> (b u v) c h w', u=a, v=a)
+        t_views = rearrange(t, 'b c (u h) (v w) -> (b u v) c h w', u=a, v=a)
         C1, C2, ws = 0.01 ** 2, 0.03 ** 2, 7
         pad = ws // 2
-        mu_p = F.avg_pool2d(p, ws, 1, pad)
-        mu_t = F.avg_pool2d(t, ws, 1, pad)
-        s_p = F.avg_pool2d(p ** 2, ws, 1, pad) - mu_p ** 2
-        s_t = F.avg_pool2d(t ** 2, ws, 1, pad) - mu_t ** 2
-        s_x = F.avg_pool2d(p * t,  ws, 1, pad) - mu_p * mu_t
+        mu_p = F.avg_pool2d(p_views, ws, 1, pad)
+        mu_t = F.avg_pool2d(t_views, ws, 1, pad)
+        s_p = F.avg_pool2d(p_views ** 2, ws, 1, pad) - mu_p ** 2
+        s_t = F.avg_pool2d(t_views ** 2, ws, 1, pad) - mu_t ** 2
+        s_x = F.avg_pool2d(p_views * t_views, ws, 1, pad) - mu_p * mu_t
         s_p, s_t = s_p.clamp(min=0), s_t.clamp(min=0)
         ssim = ((2 * mu_p * mu_t + C1) * (2 * s_x + C2)) / \
                ((mu_p ** 2 + mu_t ** 2 + C1) * (s_p + s_t + C2))
         return 1 - ssim.mean()
 
     def gradient_loss(self, p, t):
-        p, t = p.float(), t.float()  # float32 for Sobel convolution
-        sx = self.sobel_x  # already float32 (registered as buffer)
+        """Per-view gradient loss — avoids Sobel seeing SAI view boundaries."""
+        p, t = p.float(), t.float()
+        B, C, H, W = p.shape
+        a = self.angRes
+        # Reshape to per-view to avoid Sobel crossing view boundaries
+        p_views = rearrange(p, 'b c (u h) (v w) -> (b u v) c h w', u=a, v=a)
+        t_views = rearrange(t, 'b c (u h) (v w) -> (b u v) c h w', u=a, v=a)
+        sx = self.sobel_x
         sy = self.sobel_y
         return (
-            F.l1_loss(F.conv2d(p, sx, padding=1), F.conv2d(t, sx, padding=1))
-            + F.l1_loss(F.conv2d(p, sy, padding=1), F.conv2d(t, sy, padding=1))
+            F.l1_loss(F.conv2d(p_views, sx, padding=1), F.conv2d(t_views, sx, padding=1))
+            + F.l1_loss(F.conv2d(p_views, sy, padding=1), F.conv2d(t_views, sy, padding=1))
         )
 
     def angular_loss(self, p, t):

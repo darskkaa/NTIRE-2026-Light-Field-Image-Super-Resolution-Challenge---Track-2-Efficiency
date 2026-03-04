@@ -3,6 +3,7 @@ import importlib
 from tqdm import tqdm
 import torch.backends.cudnn as cudnn
 from utils.utils import *
+from utils.utils import LFintegrate_gaussian
 from utils.utils_datasets import TrainSetDataLoader, MultiTestSetDataLoader
 from collections import OrderedDict
 import random
@@ -320,9 +321,20 @@ def test(test_loader, device, net, args, save_dir=None):
                 subLFout[i:min(i + args.minibatch_for_test, numU * numV), :, :, :] = out.cpu()
         subLFout = rearrange(subLFout, '(n1 n2) 1 a1h a2w -> n1 n2 a1h a2w', n1=numU, n2=numV)
 
-        ''' Restore the Patches to LFs '''
-        Sr_4D_y = LFintegrate(subLFout, args.angRes_out, args.patch_size_for_test * args.scale_factor,
-                              args.stride_for_test * args.scale_factor, Hr_SAI_y.size(-2)//args.angRes_out, Hr_SAI_y.size(-1)//args.angRes_out)
+        ''' Restore the Patches to LFs (Gaussian PSW) '''
+        use_gaussian = getattr(args, 'use_gaussian_psw', True)
+        target_h = Hr_SAI_y.size(-2)//args.angRes_out
+        target_w = Hr_SAI_y.size(-1)//args.angRes_out
+        sr_pz = args.patch_size_for_test * args.scale_factor
+        sr_stride = args.stride_for_test * args.scale_factor
+        if use_gaussian:
+            Sr_4D_y = LFintegrate_gaussian(
+                subLFout, args.angRes_out, sr_pz, sr_stride, target_h, target_w
+            )
+        else:
+            Sr_4D_y = LFintegrate(
+                subLFout, args.angRes_out, sr_pz, sr_stride, target_h, target_w
+            )
         Sr_SAI_y = rearrange(Sr_4D_y, 'a1 a2 h w -> 1 1 (a1 h) (a2 w)')
 
         ''' Calculate the PSNR & SSIM '''
