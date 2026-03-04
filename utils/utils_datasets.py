@@ -166,6 +166,60 @@ def flip_SAI(data, angRes):
     return data
 
 
+def cutblur(data, label, alpha=0.7):
+    """CutBlur augmentation (Yoo et al., CVPR 2020).
+
+    Randomly pastes a rectangular patch from the upscaled LR image into the HR
+    image (and vice versa). This teaches the model to handle mixed-resolution
+    inputs and improves robustness. Proven +0.1-0.2 dB on SR benchmarks.
+
+    The LR data is bicubic-upscaled to match HR size for the cut region,
+    then the cut region is swapped between LR-upscaled and HR.
+
+    Args:
+        data: LR image (H_lr, W_lr) — SAI mosaic
+        label: HR image (H_hr, W_hr) — SAI mosaic
+        alpha: max fraction of area to cut (default 0.7 = up to 70%)
+    """
+    H_lr, W_lr = data.shape[:2]
+    H_hr, W_hr = label.shape[:2]
+    scale = H_hr // H_lr
+
+    # Random cut ratio between 0.25 and alpha
+    cut_ratio = random.uniform(0.25, alpha)
+    # CRITICAL: dimensions must be aligned to scale factor for reshape
+    cut_h = int(H_hr * np.sqrt(cut_ratio)) // scale * scale
+    cut_w = int(W_hr * np.sqrt(cut_ratio)) // scale * scale
+
+    # Minimum cut size = scale (1 LR pixel)
+    cut_h = max(cut_h, scale)
+    cut_w = max(cut_w, scale)
+
+    # Random position in HR space, aligned to scale factor
+    cy = random.randint(0, (H_hr - cut_h) // scale) * scale
+    cx = random.randint(0, (W_hr - cut_w) // scale) * scale
+
+    # Upscale LR to HR size using simple repeat (fast, no scipy dependency)
+    data_up = np.repeat(np.repeat(data, scale, axis=0), scale, axis=1)
+
+    # Swap: paste HR patch into upscaled-LR, paste LR patch into HR
+    # This creates a mixed-resolution image for training
+    label_cut = label.copy()
+    label_cut[cy:cy+cut_h, cx:cx+cut_w] = data_up[cy:cy+cut_h, cx:cx+cut_w]
+
+    # Downscale the mixed HR back to LR space
+    data_cut = data.copy()
+    lr_cy, lr_cx = cy // scale, cx // scale
+    lr_ch, lr_cw = cut_h // scale, cut_w // scale
+    # Paste HR region (downscaled) into LR via area-average
+    hr_patch = label[cy:cy+cut_h, cx:cx+cut_w]
+    if lr_ch > 0 and lr_cw > 0:
+        hr_patch_ds = hr_patch.reshape(lr_ch, scale, lr_cw, scale).mean(axis=(1, 3))
+        data_cut[lr_cy:lr_cy+lr_ch, lr_cx:lr_cx+lr_cw] = hr_patch_ds
+
+    return data_cut, label_cut
+
+
 def augmentation(data, label):
     if random.random() < 0.5:  # flip along W-V direction (axis=1)
         data = data[:, ::-1]
@@ -186,5 +240,9 @@ def augmentation(data, label):
         # Clip to [0,1] after gamma to prevent overflow in float32 Y-channel
         data = np.clip(np.power(np.clip(data, 1e-8, 1.0), gamma), 0.0, 1.0)
         label = np.clip(np.power(np.clip(label, 1e-8, 1.0), gamma), 0.0, 1.0)
+    # CutBlur augmentation (Yoo et al., CVPR 2020) — mixes LR↔HR patches
+    # to improve feature robustness. 30% probability, conservative.
+    if random.random() < 0.3:
+        data, label = cutblur(data, label)
     return data, label
 

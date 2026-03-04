@@ -1,20 +1,24 @@
 """
-MLFIM Training V2 — Improved Pipeline for Maximum PSNR
-=======================================================
-Key improvements over train_mlfim.py:
-  1. Finetune LR: 2e-4 (research-backed sweet spot for LFSR)
-  2. Gradient accumulation: effective batch_size=8 (2 accum steps × batch=4)
-  3. Loss scheduling: L1-only for first 10 finetune epochs, then composite
-  4. Longer warmup (10 epochs for finetune) — stabilizes after L1→composite switch
-  5. Cosine eta_min 1e-6 (was 5e-7) — slightly more LR in the tail
+MLFIM Training V2 — Max-PSNR Pipeline
+======================================
+Research-backed training recipe for NTIRE 2026 Track 2 Efficiency.
+
+Key design decisions (all cited in implementation_plan.md):
+  1. Loss: Pure Charbonnier (SwinIR/HAT/LFMamba/LFTransMamba all use L1/Charb)
+  2. LR: 3e-4 for finetune (LFTransMamba 1st-place recipe)
+  3. β2: 0.99 for finetune (LFTransMamba), 0.999 for pretrain (LFMamba)
+  4. Weight decay: 5e-5 finetune, 1e-4 pretrain
+  5. Cosine eta_min: 5e-7 (deeper tail for EMA distillation)
+  6. CutBlur augmentation (Yoo et al., CVPR 2020)
 
 Usage:
-  # Stage 1: MLFIM Pre-training
-  python train_mlfim_v2.py --stage pretrain --mlfim_mask_ratio 0.25 --epoch 50 \\
-      --lr 2e-4 --model_name MyEfficientLFNetV2_MLFIM
+  # Stage 1: MLFIM Pre-training (60 epochs)
+  python train_mlfim_v2.py --stage pretrain --mlfim_mask_ratio 0.25 --epoch 60 \\
+      --lr 2e-4 --model_name MyEfficientLFNetV2_MLFIM --loss_type charbonnier
 
-  # Stage 2: Fine-tuning (optimized)
-  python train_mlfim_v2.py --stage finetune --epoch 100 --lr 2e-4 \\
+  # Stage 2: Fine-tuning (120 epochs, max-PSNR recipe)
+  python train_mlfim_v2.py --stage finetune --epoch 120 --lr 3e-4 --beta2 0.99 \\
+      --weight_decay 5e-5 --loss_type charbonnier \\
       --path_pre_pth <stage1_best.pth> --model_name MyEfficientLFNetV2_MLFIM \\
       --use_pre_ckpt
 """
@@ -43,7 +47,7 @@ def parse_mlfim_args():
     """Parse MLFIM-specific arguments on top of standard training args."""
     from option import args as base_args
 
-    parser = argparse.ArgumentParser(description="MLFIM Training V2")
+    parser = argparse.ArgumentParser(description="MLFIM Training V2 — Max PSNR")
     parser.add_argument('--stage', type=str, choices=['pretrain', 'finetune'],
                         required=True, help='Training stage')
     parser.add_argument('--mlfim_mask_ratio', type=float, default=0.25,
@@ -51,9 +55,20 @@ def parse_mlfim_args():
     parser.add_argument('--grad_accum_steps', type=int, default=2,
                         help='Gradient accumulation steps for effective batch size '
                              '(effective_bs = batch_size * grad_accum_steps)')
-    parser.add_argument('--loss_warmup_epochs', type=int, default=20,
+    parser.add_argument('--loss_warmup_epochs', type=int, default=0,
                         help='Number of finetune epochs to use L1-only before '
-                             'switching to composite loss')
+                             'switching to composite loss (0 = no warmup)')
+    parser.add_argument('--loss_type', type=str, default='charbonnier',
+                        choices=['charbonnier', 'composite'],
+                        help='Loss function: charbonnier (max PSNR, SOTA default) '
+                             'or composite (Charb+FFT+SSIM+Grad+Ang)')
+    parser.add_argument('--beta2', type=float, default=0.999,
+                        help='Adam β2 (0.99 for finetune per LFTransMamba, '
+                             '0.999 for pretrain per LFMamba)')
+    parser.add_argument('--weight_decay', type=float, default=1e-4,
+                        help='AdamW weight decay (5e-5 for finetune, 1e-4 for pretrain)')
+    parser.add_argument('--eta_min', type=float, default=5e-7,
+                        help='Cosine scheduler minimum LR')
 
     mlfim_args, _ = parser.parse_known_args()
 
@@ -64,6 +79,10 @@ def parse_mlfim_args():
     )
     base_args.grad_accum_steps = mlfim_args.grad_accum_steps
     base_args.loss_warmup_epochs = mlfim_args.loss_warmup_epochs
+    base_args.loss_type = mlfim_args.loss_type
+    base_args.beta2 = mlfim_args.beta2
+    base_args.weight_decay = mlfim_args.weight_decay
+    base_args.eta_min = mlfim_args.eta_min
 
     return base_args
 
@@ -288,6 +307,9 @@ def main():
                 logger.log_string('Fine-tuning: masking DISABLED (mask_ratio=0.0)')
                 start_epoch = 0  # Reset epoch counter for fine-tuning
                 # Don't load optimizer/scheduler — finetune has different LR schedule
+                _resume_optimizer = None
+                _resume_scheduler = None
+                _resume_ema = None
             else:
                 # Pretrain resume: restore optimizer/scheduler state for seamless continuation
                 _resume_optimizer = ckpt.get('optimizer', None)
@@ -323,35 +345,50 @@ def main():
         logger.log_string('EMA enabled (decay=0.999, fresh start)')
 
     # ---- Loss functions ----
-    # L1 criterion (used for pretrain and loss warmup period)
-    l1_criterion = nn.L1Loss().to(device)
-    # Composite criterion (used after warmup in finetune stage)
-    composite_criterion = MODEL.get_loss(args).to(device) if stage == 'finetune' else None
+    # Charbonnier criterion (SOTA default for max PSNR — SwinIR/HAT/LFMamba/LFTransMamba)
+    charb_eps = getattr(args, 'charbonnier_eps', 1e-9)
+    class CharbonnierLoss(nn.Module):
+        def __init__(self, eps):
+            super().__init__()
+            self.eps = eps
+        def forward(self, pred, target, data_info=None):
+            pred, target = pred.float(), target.float()
+            return torch.mean(torch.sqrt((pred - target) ** 2 + self.eps ** 2))
 
-    if stage == 'pretrain':
-        logger.log_string('Pre-training loss: L1 (entire stage)')
+    charbonnier_criterion = CharbonnierLoss(charb_eps).to(device)
+    l1_criterion = nn.L1Loss().to(device)
+    # Composite criterion (only created if needed)
+    composite_criterion = None
+    if args.loss_type == 'composite' and stage == 'finetune':
+        composite_criterion = MODEL.get_loss(args).to(device)
+
+    logger.log_string(f'Loss type: {args.loss_type}')
+    if args.loss_type == 'charbonnier':
+        logger.log_string('  → Pure Charbonnier (eps=1e-9) — max PSNR mode')
+    elif stage == 'pretrain':
+        logger.log_string('  → Pre-training: L1 (entire stage)')
     else:
-        logger.log_string(f'Fine-tuning loss: L1 for epochs 1-{args.loss_warmup_epochs}, '
+        logger.log_string(f'  → Fine-tuning: L1 for epochs 1-{args.loss_warmup_epochs}, '
                          f'then composite (Charb+FFT+SSIM+Grad+Ang)')
 
     # ---- Optimizer ----
-    # Key change: finetune LR = 1e-4 (was 5e-5 in v1)
-    # This allows the model to escape the pretrain local minimum before settling.
-    lr = args.lr  # V2: let the script arg control LR directly (no cap)
+    lr = args.lr
+    beta2 = args.beta2
+    wd = args.weight_decay
 
     optimizer = torch.optim.AdamW(
         [p for p in net.parameters() if p.requires_grad],
         lr=lr,
-        betas=(0.9, 0.999),
+        betas=(0.9, beta2),
         eps=1e-08,
-        weight_decay=1e-4,
+        weight_decay=wd,
     )
-    logger.log_string(f'Optimizer: AdamW, LR={lr}, weight_decay=1e-4')
+    logger.log_string(f'Optimizer: AdamW, LR={lr}, β2={beta2}, weight_decay={wd}')
 
     # ---- Scheduler ----
     total_epochs = args.epoch
     warmup_epochs = min(10 if stage == 'finetune' else 5, max(total_epochs // 10, 5))
-    eta_min = 1e-6  # V2: 1e-6 (was 5e-7) — more LR in the tail
+    eta_min = args.eta_min
     main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=total_epochs - warmup_epochs, eta_min=eta_min
     )
@@ -389,16 +426,23 @@ def main():
                           f'[{stage.upper()}, mask={args.mlfim_mask_ratio}, '
                           f'lr={current_lr:.2e}]:')
 
-        # Select loss function based on loss warmup schedule
-        if stage == 'pretrain':
+        # Select loss function based on loss_type and warmup schedule
+        if args.loss_type == 'charbonnier':
+            # SOTA max-PSNR: pure Charbonnier for entire training
+            criterion = charbonnier_criterion
+        elif stage == 'pretrain':
             criterion = l1_criterion
-        elif epoch < args.loss_warmup_epochs:
+        elif args.loss_warmup_epochs > 0 and epoch < args.loss_warmup_epochs:
             criterion = l1_criterion
             if epoch == 0:
                 logger.log_string(f'  → Using L1 loss (warmup: epochs 1-{args.loss_warmup_epochs})')
         else:
+            assert composite_criterion is not None, (
+                "composite_criterion is None — use --loss_type charbonnier, "
+                "or set --loss_warmup_epochs > 0 for pretrain stage."
+            )
             criterion = composite_criterion
-            if epoch == args.loss_warmup_epochs:
+            if epoch == args.loss_warmup_epochs and args.loss_warmup_epochs > 0:
                 logger.log_string('  → Switching to composite loss')
 
         # EMA decay bump in final 25% of training

@@ -1075,18 +1075,44 @@ def LF_interpolate(LF, scale_factor, mode):
 
 
 # ============================================================================
-# LOSS FUNCTION (V9-proven composite loss — strictly better than L1)
+# LOSS FUNCTION — Pure Charbonnier (SOTA max-PSNR default)
+# ============================================================================
+class CharbonnierLoss(nn.Module):
+    """Pure Charbonnier loss for maximum PSNR training.
+
+    This is the SOTA default for SR PSNR optimization:
+      - SwinIR (Liang et al., ICCVW 2021): L1
+      - HAT (Chen et al., CVPR 2023): L1
+      - LFMamba (Chen et al., 2024): L1
+      - LFTransMamba (1st NTIRE 2025): L1/Charb
+
+    Charbonnier is a smooth approximation of L1 that avoids gradient
+    discontinuity at zero, providing more stable training.
+    """
+
+    def __init__(self, args=None, eps=1e-9):
+        super().__init__()
+        self.eps = eps if args is None else getattr(args, 'charbonnier_eps', eps)
+
+    def forward(self, pred, target, data_info=None):
+        pred, target = pred.float(), target.float()
+        return torch.mean(torch.sqrt((pred - target) ** 2 + self.eps ** 2))
+
+
+# ============================================================================
+# LOSS FUNCTION — Composite (for ablation/perceptual quality experiments)
 # ============================================================================
 class get_loss(nn.Module):
-    """V10.4: Charbonnier + Focal-FFT + SSIM + Gradient + Angular (Tuned for Max PSNR).
+    """Composite loss: Charbonnier + Focal-FFT + SSIM + Gradient + Angular.
 
-    Changes vs V10.3:
-      - fft_loss upgraded to Focal Frequency Loss (Jiang et al., ICCV 2021).
-        Adaptively up-weights hard-to-reconstruct frequency components instead
-        of treating all frequencies equally. Self-normalising, so weight reduced
-        from 0.1 → 0.05 to avoid over-penalising high-freq components early.
-      - ssim_w: 0.1 → 0.15 (backed by HAT/SwinIR ablations; SSIM weight
-        correlates directly with perceptual quality on benchmark datasets).
+    NOTE: This is NOT the default for max-PSNR training. Use CharbonnierLoss
+    instead. This composite loss is useful for:
+      - Ablation studies
+      - Perceptual quality optimization
+      - When SSIM metric matters more than PSNR
+
+    For the NTIRE 2026 Track 2 efficiency challenge (ranked by PSNR),
+    use --loss_type charbonnier in the training scripts.
     """
 
     def __init__(self, args):

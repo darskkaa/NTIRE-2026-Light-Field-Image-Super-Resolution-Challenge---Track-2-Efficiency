@@ -1,13 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# V2 Stage 2: Fine-tuning (100 epochs, optimized LR + loss scheduling)
+# V2 Stage 2: Fine-tuning (120 epochs, max-PSNR recipe)
 # =============================================================================
 # Usage: bash train_v2_stage2.sh <path_to_stage1_best.pth>
 #
-# Key V2 improvements:
-#   - LR: 1e-4 (was 5e-5) — escapes pretrain local minimum
-#   - Grad accum 2 steps → effective batch=8 (was 4) — smoother gradients
-#   - Loss warmup: L1 for first 20 epochs, then composite loss
+# Research-backed hyperparameters (see implementation_plan.md):
+#   - LR: 3e-4 (LFTransMamba 1st-place NTIRE 2025 recipe)
+#   - β2: 0.99 (LFTransMamba — faster 2nd-moment adaptation)
+#   - Weight decay: 5e-5 (reduced — less regularization for fitting)
+#   - Loss: Pure Charbonnier (SwinIR/HAT/LFMamba/LFTransMamba all use L1/Charb)
+#   - Grad accum 2 steps → effective batch=8
+#   - Cosine eta_min: 5e-7 (deeper tail for EMA distillation)
 # =============================================================================
 
 set -e
@@ -27,15 +30,18 @@ fi
 
 PRETRAIN_CKPT="$1"
 
-# ---- CONFIG ----
+# ---- CONFIG (Research-backed max-PSNR recipe) ----
 MODEL_NAME="MyEfficientLFNetV2_MLFIM"
 ANGRES=5
 SCALE=4
-EPOCHS=100           # V2: 100 (LFTransMamba uses 100; 200 risks Colab timeout)
+EPOCHS=120           # Extended: 120ep for deep cosine tail + EMA polish
 BATCH=4
-LR=2e-4              # V2: 2e-4 (research: 2e-4 to 3e-4 is sweet spot for LFSR)
-GRAD_ACCUM=2         # Effective batch = 4 × 2 = 8
-LOSS_WARMUP=10       # 10% of 100 epochs (was 20 for 200 epochs)
+LR=3e-4              # LFTransMamba recipe (1st NTIRE 2025)
+BETA2=0.99            # LFTransMamba: faster adaptation for finetune
+WEIGHT_DECAY=5e-5     # Reduced: less regularization = more fitting capacity
+ETA_MIN=5e-7          # Deep cosine tail for EMA distillation
+GRAD_ACCUM=2          # Effective batch = 4 × 2 = 8
+LOSS_TYPE=charbonnier  # SOTA: pure pixel loss for max PSNR
 NUM_WORKERS=2
 
 # ---- PATHS ----
@@ -47,8 +53,10 @@ echo "Model:          $MODEL_NAME"
 echo "Checkpoint:     $PRETRAIN_CKPT"
 echo "Epochs:         $EPOCHS"
 echo "Batch:          $BATCH × $GRAD_ACCUM accum = $((BATCH * GRAD_ACCUM)) effective"
-echo "LR:             $LR → cosine → 1e-6"
-echo "Loss warmup:    $LOSS_WARMUP epochs (L1-only before composite)"
+echo "LR:             $LR → cosine → $ETA_MIN"
+echo "β2:             $BETA2 (LFTransMamba)"
+echo "Weight decay:   $WEIGHT_DECAY"
+echo "Loss:           $LOSS_TYPE (pure pixel loss)"
 echo ""
 
 python train_mlfim_v2.py \
@@ -59,8 +67,11 @@ python train_mlfim_v2.py \
     --batch_size "$BATCH" \
     --lr "$LR" \
     --epoch "$EPOCHS" \
+    --beta2 "$BETA2" \
+    --weight_decay "$WEIGHT_DECAY" \
+    --eta_min "$ETA_MIN" \
     --grad_accum_steps "$GRAD_ACCUM" \
-    --loss_warmup_epochs "$LOSS_WARMUP" \
+    --loss_type "$LOSS_TYPE" \
     --use_pre_ckpt \
     --path_pre_pth "$PRETRAIN_CKPT" \
     --num_workers "$NUM_WORKERS" \

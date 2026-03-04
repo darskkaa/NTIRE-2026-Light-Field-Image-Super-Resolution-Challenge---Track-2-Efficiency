@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# V2 Stage 1: MLFIM Pre-training (50 epochs, faster than V1's 80)
+# V2 Stage 1: MLFIM Pre-training (60 epochs, Charbonnier loss)
 # =============================================================================
 # Usage: bash train_v2_stage1.sh
 # Runs on Colab with pre-generated training data.
@@ -16,11 +16,12 @@ echo "=========================================="
 MODEL_NAME="MyEfficientLFNetV2_MLFIM"
 ANGRES=5
 SCALE=4
-EPOCHS=50           # V2: 50 (V1 used 80 — saturation after 40 means wasted epochs)
+EPOCHS=60           # V2: 60 (was 50; extra 10ep for better feature init)
 BATCH=4
-LR=2e-4
+LR=2e-4             # LFMamba's proven pretrain LR
 MASK_RATIO=0.25
-NUM_WORKERS=20
+LOSS_TYPE=charbonnier  # SOTA: pure pixel loss for max PSNR
+NUM_WORKERS=4
 
 # ---- PATHS (adjust for your setup) ----
 TRAIN_DATA="./data_for_training/"
@@ -28,9 +29,10 @@ TEST_DATA="./data_for_test/"
 
 echo ""
 echo "Model:      $MODEL_NAME"
-echo "Epochs:     $EPOCHS (reduced from 80 — pretrain saturates early)"
+echo "Epochs:     $EPOCHS"
 echo "Batch:      $BATCH"
 echo "LR:         $LR"
+echo "Loss:       $LOSS_TYPE (pure pixel loss)"
 echo "Mask ratio: $MASK_RATIO"
 echo ""
 
@@ -65,6 +67,7 @@ python train_mlfim_v2.py \
     --lr "$LR" \
     --epoch "$EPOCHS" \
     --mlfim_mask_ratio "$MASK_RATIO" \
+    --loss_type "$LOSS_TYPE" \
     --num_workers "$NUM_WORKERS" \
     --path_for_train "$TRAIN_DATA" \
     --path_for_test "$TEST_DATA" \
