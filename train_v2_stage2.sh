@@ -15,9 +15,22 @@
 
 set -e
 
-echo "=========================================="
-echo "  MLFIM V2 — Stage 2: Fine-tuning"
-echo "=========================================="
+# ---- ANSI Colors ----
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+header() { echo -e "\n${BOLD}${CYAN}==========================================${NC}\n${BOLD}${CYAN}$1${NC}\n${BOLD}${CYAN}==========================================${NC}"; }
+
+header "MLFIM V2 — Stage 2: Fine-tuning"
 
 # ---- ARGS ----
 if [ -z "$1" ]; then
@@ -49,15 +62,41 @@ TRAIN_DATA="./data_for_training/"
 TEST_DATA="./data_for_test/"
 
 echo ""
-echo "Model:          $MODEL_NAME"
-echo "Checkpoint:     $PRETRAIN_CKPT"
-echo "Epochs:         $EPOCHS"
-echo "Batch:          $BATCH × $GRAD_ACCUM accum = $((BATCH * GRAD_ACCUM)) effective"
-echo "LR:             $LR → cosine → $ETA_MIN"
-echo "β2:             $BETA2 (LFTransMamba)"
-echo "Weight decay:   $WEIGHT_DECAY"
-echo "Loss:           $LOSS_TYPE (pure pixel loss)"
+info "Model:          $MODEL_NAME"
+info "Checkpoint:     $PRETRAIN_CKPT"
+info "Epochs:         $EPOCHS"
+info "Batch:          $BATCH × $GRAD_ACCUM accum = $((BATCH * GRAD_ACCUM)) effective"
+info "LR:             $LR → cosine → $ETA_MIN"
+info "β2:             $BETA2 (LFTransMamba)"
+info "Weight decay:   $WEIGHT_DECAY"
+info "Loss:           $LOSS_TYPE (pure pixel loss)"
 echo ""
+
+# =============================================================================
+# PRE-FLIGHT: VERIFY DATA EXISTS
+# =============================================================================
+header "🔍 Pre-flight: Verify Data"
+
+if [ -z "$(find data_for_training -name "*.h5" 2>/dev/null | head -1)" ]; then
+    error "Training data not found! Run train_v2_stage1.sh first."
+fi
+if [ -z "$(find data_for_test -name "*.h5" 2>/dev/null | head -1)" ]; then
+    error "Test data not found! Run train_v2_stage1.sh first."
+fi
+success "Training and test data found."
+
+# =============================================================================
+# VERIFY CHECKPOINT EXISTS
+# =============================================================================
+if [ ! -f "$PRETRAIN_CKPT" ]; then
+    error "Checkpoint not found: $PRETRAIN_CKPT"
+fi
+success "Stage 1 checkpoint found: $PRETRAIN_CKPT"
+
+# =============================================================================
+# STAGE 2: FINE-TUNING
+# =============================================================================
+header "🏋️ Stage 2: Fine-tuning ($EPOCHS Epochs)"
 
 python train_mlfim_v2.py \
     --stage finetune \
@@ -79,19 +118,29 @@ python train_mlfim_v2.py \
     --path_for_test "$TEST_DATA" \
     --data_name ALL
 
-echo ""
-echo "=========================================="
-echo "  Stage 2 Complete!"
-echo "  Best checkpoint: log/.../checkpoints/${MODEL_NAME}_finetune_best.pth"
-echo "=========================================="
+success "Stage 2 (Fine-tuning) complete"
+
+# =============================================================================
+# INFERENCE & EVALUATION
+# =============================================================================
+header "📊 Inference and Evaluation"
+
+BEST_FINETUNE_CKPT=$(ls -t log/SR_5x5_4x/ALL/${MODEL_NAME}/checkpoints/${MODEL_NAME}_finetune_best.pth 2>/dev/null | head -1)
+if [ -n "$BEST_FINETUNE_CKPT" ]; then
+    info "Using best fine-tuned checkpoint: $BEST_FINETUNE_CKPT"
+    info "Running inference..."
+    python inference.py --model_name $MODEL_NAME --angRes $ANGRES --scale_factor $SCALE \
+        --use_pre_ckpt --path_pre_pth "$BEST_FINETUNE_CKPT" \
+        --path_for_test ./data_for_test/ --data_name ALL
+    success "Inference complete"
+else
+    warn "No fine-tuned checkpoints found. Skipping inference."
+fi
+
+header "🏁 ALL DONE!"
+success "Pipeline complete. Ready for CodaBench submission."
 echo ""
 echo "Next steps:"
-echo "  1. Run inference with the best checkpoint"
-echo "  2. Submit to CodaLab test server"
+echo "  1. Submit results to CodaLab test server"
+echo "  2. Fill out the Fact Sheet for co-authorship"
 echo ""
-echo "  python inference.py \\"
-echo "    --model_name $MODEL_NAME \\"
-echo "    --scale_factor $SCALE \\"
-echo "    --use_pre_ckpt \\"
-echo "    --path_pre_pth <best_checkpoint.pth> \\"
-echo "    --data_name NTIRE_Val_Real"
