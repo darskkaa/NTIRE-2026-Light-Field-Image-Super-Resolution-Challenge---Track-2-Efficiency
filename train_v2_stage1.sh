@@ -21,7 +21,7 @@ BATCH=4
 LR=2e-4             # LFMamba's proven pretrain LR
 MASK_RATIO=0.25
 LOSS_TYPE=charbonnier  # SOTA: pure pixel loss for max PSNR
-NUM_WORKERS=4
+NUM_WORKERS=16
 
 # ---- PATHS (adjust for your setup) ----
 TRAIN_DATA="./data_for_training/"

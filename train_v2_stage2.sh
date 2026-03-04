@@ -42,7 +42,7 @@ WEIGHT_DECAY=5e-5     # Reduced: less regularization = more fitting capacity
 ETA_MIN=5e-7          # Deep cosine tail for EMA distillation
 GRAD_ACCUM=2          # Effective batch = 4 × 2 = 8
 LOSS_TYPE=charbonnier  # SOTA: pure pixel loss for max PSNR
-NUM_WORKERS=2
+NUM_WORKERS=16
 
 # ---- PATHS ----
 TRAIN_DATA="./data_for_training/"
