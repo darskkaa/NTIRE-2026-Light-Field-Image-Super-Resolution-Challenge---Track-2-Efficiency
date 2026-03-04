@@ -34,7 +34,7 @@ V10.1 Changes:
   3. Window attention ws=4→8
   4. FASS simplified gate
 
-Track 2 Efficiency Budget: C=44, n_sa=3, n_epi=2, vss_depth=2.
+Track 2 Efficiency Budget: C=48, n_sa=4, n_epi=3, vss_depth=2.
 """
 
 import torch
@@ -60,6 +60,36 @@ except ImportError:
         "Install:  pip install mamba-ssm causal-conv1d\n\n"
         + "=" * 70
     )
+
+
+# ============================================================================
+# DropPath (Stochastic Depth) — inline implementation (avoids timm dependency)
+# ============================================================================
+class DropPath(nn.Module):
+    """Stochastic depth regularization (Huang et al., 2016).
+
+    Drops the entire residual branch per-sample during training.
+    Used in SwinIR, MambaIR, LFMamba VSSBlock, HAT — proven to
+    improve generalization on real-world datasets.
+    """
+
+    def __init__(self, drop_prob: float = 0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training or self.drop_prob == 0.0:
+            return x
+        keep_prob = 1.0 - self.drop_prob
+        # Per-sample mask: (B, 1, 1, ...) broadcasts over all dims
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        mask = x.new_empty(shape).bernoulli_(keep_prob)
+        if keep_prob > 0.0:
+            mask.div_(keep_prob)
+        return x * mask
+
+    def extra_repr(self) -> str:
+        return f'drop_prob={self.drop_prob:.3f}'
 
 
 # ============================================================================
@@ -92,13 +122,15 @@ class get_model(nn.Module):
         # CRITICAL: channels MUST be divisible by 4 for BMDMambaLayer's 4-way
         # channel split (C4 = channels // 4). 45 % 4 = 1 → last group gets
         # 12 channels but Mamba expects 11 → shape mismatch crash.
-        self.channels   = 44      # 44 % 4 = 0 ✅ (was 45, crashed Mamba)
-        self.n_sa       = 3       # V10.2: 2→3 (uses freed EPI budget)
-        self.n_epi      = 2       # number of EPI groups (weight-shared)
+        self.channels   = 48      # V2.3: 44→48 for max capacity (48 % 4 = 0 ✅)
+        self.n_sa       = 4       # V2.3: 3→4 (fills 20G budget with wider C=48)
+        self.n_epi      = 3       # V2.2: 2→3 (matches LFMamba's 3 EPISSM depth)
         self.d_state    = 16
         self.d_conv     = 4
         self.expand     = 2.0     # matching LFMamba's proven value
         self.vss_depth  = 2       # matching LFMamba depth for quality
+        # V2.1: Stochastic depth (DropPath) — proven in SwinIR/MambaIR/LFMamba
+        self.drop_path_rate = 0.05
 
         C = self.channels
 
@@ -128,17 +160,22 @@ class get_model(nn.Module):
         )
 
         # ---- MODULE 2: Spatial-Angular Feature Learning -------------------
+        # V2.1: Linearly increasing DropPath rates across all groups
+        n_total_groups = self.n_sa + self.n_epi
+        dpr = [self.drop_path_rate * i / max(n_total_groups - 1, 1)
+               for i in range(n_total_groups)]
         self.sa_groups = nn.ModuleList([
             SpaAngGroup(C, self.angRes, self.d_state, self.d_conv,
-                        self.expand, self.vss_depth)
-            for _ in range(self.n_sa)
+                        self.expand, self.vss_depth, drop_path=dpr[i])
+            for i in range(self.n_sa)
         ])
 
         # ---- MODULE 3: EPI Feature Learning -------------------------------
         self.epi_groups = nn.ModuleList([
             EPIGroup(C, self.angRes, self.d_state, self.d_conv,
-                     self.expand, self.vss_depth)
-            for _ in range(self.n_epi)
+                     self.expand, self.vss_depth,
+                     drop_path=dpr[self.n_sa + i])
+            for i in range(self.n_epi)
         ])
 
         # ---- MODULE 4: Window Attention (V9-novel, global context) --------
@@ -154,6 +191,11 @@ class get_model(nn.Module):
         self.asg = AdaptiveStreamGating(C)
 
         # ---- MODULE 5.5: Local Contrast Enhancement (LCE) -----------------
+        # V2.1: Multi-depth fusion — IFE long-skip to reconstruction head
+        # Ensures upsampler has direct access to clean IFE features before
+        # any Mamba smoothing (LFMamba feeds all 3 depths to upsampler).
+        self.depth_fuse = nn.Conv2d(C * 2, C, 1, bias=False)
+
         # V10.3: Lightweight sharpening applied after ASG. Extracts high-freq
         # residual with a depthwise 3×3, refines with 1×1, injects with learned
         # gate. Costs ~2K params and <0.1G FLOPs. Counters Mamba's low-pass bias
@@ -241,6 +283,10 @@ class get_model(nn.Module):
 
         # ---- MODULE 5.5: Local Contrast Enhancement -----------------------
         combined = self.lce(combined)
+
+        # ---- MODULE 5.6: Multi-depth fusion (V2.1) ------------------------
+        # Concat ASG+LCE output with clean IFE features → 1×1 fuse
+        combined = self.depth_fuse(torch.cat([combined, init_2d], dim=1))
 
         # ---- MODULE 6: Reconstruction ------------------------------------
         out = self.hlfr(combined)
@@ -367,11 +413,15 @@ class SpaAngGroup(nn.Module):
       4. FASS — Frequency-Assisted residual (from V9)
     """
 
-    def __init__(self, channels, angRes, d_state, d_conv, expand, depth):
+    def __init__(self, channels, angRes, d_state, d_conv, expand, depth,
+                 drop_path=0.0):
         super().__init__()
         self.angRes = angRes
 
         self.spa_block = SpaSSMBlock(channels, d_state, d_conv, expand, depth)
+        # V2.2: Interleaved MicroCAB after spatial SSM (like LFMamba's VSSBlock)
+        # Provides conv-based channel refinement between spatial and angular stages
+        self.spa_cab = MicroCAB(channels)
         self.ang_block = AngSSMBlock(channels, angRes, d_state, d_conv,
                                      expand, depth)
         self.sam = SpatialAngularModulator(channels, angRes)
@@ -379,6 +429,8 @@ class SpaAngGroup(nn.Module):
         # V10.3 FIX: sigmoid-initialized at -1.6 (sigmoid(-1.6)≈0.17) so the
         # outer gate starts conservative and opens to 1.0 as training progresses.
         self.res_scale = nn.Parameter(torch.ones(1) * -1.6)
+        # V2.1: Stochastic depth for regularization
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x, angRes):
         """x: (B, C, A, h, w) where A = angRes²"""
@@ -391,6 +443,11 @@ class SpaAngGroup(nn.Module):
         
         # Spatial SSM
         feat = self.spa_block(x, angRes)
+        # V2.2: Interleaved MicroCAB — conv refinement between Spa and Ang stages
+        B_c, C_c, A_c, h_c, w_c = feat.shape
+        feat_cab = rearrange(feat, 'b c a h w -> (b a) c h w')
+        feat_cab = self.spa_cab(feat_cab)
+        feat = rearrange(feat_cab, '(b a) c h w -> b c a h w', a=A_c)
         # Angular SSM
         feat = self.ang_block(feat, angRes)
         # SAM modulation
@@ -405,7 +462,7 @@ class SpaAngGroup(nn.Module):
         # Each block already has internal `out + x` — the outer res_scale
         # controls how aggressively the combined stack pushes away from
         # the input. sigmoid(-1.6) ≈ 0.17 is the initialization.
-        return x + self.res_scale.sigmoid() * (feat - x)
+        return x + self.drop_path(self.res_scale.sigmoid() * (feat - x))
 
 
 
@@ -500,7 +557,8 @@ class EPIGroup(nn.Module):
     Research basis: LFMamba EPISSM (proven), EPIT (EPI Transformer)
     """
 
-    def __init__(self, channels, angRes, d_state, d_conv, expand, depth):
+    def __init__(self, channels, angRes, d_state, d_conv, expand, depth,
+                 drop_path=0.0):
         super().__init__()
         self.angRes = angRes
         # V10.1: Single shared block for both H-EPI and V-EPI (LFMamba-style)
@@ -510,6 +568,8 @@ class EPIGroup(nn.Module):
         self.fass = FASSModule(channels)
         # V10.3: sigmoid-initialized at -1.6, consistent with SpaAngGroup
         self.res_scale = nn.Parameter(torch.ones(1) * -1.6)
+        # V2.1: Stochastic depth for regularization
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x, angRes):
         """x: (B, C, A, h, w) where A = angRes²"""
@@ -537,7 +597,7 @@ class EPIGroup(nn.Module):
         feat = rearrange(epi_2d, '(b a) c h w -> b c a h w', a=A)
 
         # V10.3: Consistent with SpaAngGroup — use x + sigmoid(res_scale) * (feat - x)
-        return x + self.res_scale.sigmoid() * (feat - x)
+        return x + self.drop_path(self.res_scale.sigmoid() * (feat - x))
 
 
 # ============================================================================
@@ -938,20 +998,20 @@ class AdaptiveStreamGating(nn.Module):
         Returns:
             (B, C, H, W) - fused features
         """
-        # Compute per-stream gate scores (B, 1, H, W)
+        # Compute per-stream gate scores: each is (B, 1, H, W)
         g_ife = self.gate_ife(f_ife)
         g_sa  = self.gate_sa(f_sa)
         g_epi = self.gate_epi(f_epi)
 
-        # Softmax across the 3 streams (dim=1 of stacked)
-        # Shape: (B, 3, H, W) → softmax → (B, 3, H, W)
-        gates = torch.stack([g_ife, g_sa, g_epi], dim=1)  # (B, 3, 1, H, W)
-        gates = gates.softmax(dim=1)                       # sum across streams = 1
+        # Softmax across the 3 streams
+        # Shape: (B, 3, 1, H, W) → softmax on dim=1 → (B, 3, 1, H, W)
+        gates = torch.stack([g_ife, g_sa, g_epi], dim=1)
+        gates = gates.softmax(dim=1)
 
         # Weight each stream by its gate score
-        # gates[:, i, 0, ...] is (B, H, W) — broadcast over C channels
+        # gates[:, i] is (B, 1, H, W) — broadcasts over C channels
         f_weighted = torch.cat([
-            f_ife * gates[:, 0],  # (B, C, H, W)
+            f_ife * gates[:, 0],  # (B, C, H, W) via broadcast
             f_sa  * gates[:, 1],
             f_epi * gates[:, 2],
         ], dim=1)  # (B, 3C, H, W)
@@ -1029,14 +1089,15 @@ class ReconstructionHead(nn.Module):
             nn.Sigmoid(),
         )
 
-        # V10.1: PixelShuffle upsampler — 3×3 convs (prevents checkerboard
-        # artifacts that 1×1 causes; matches EDSR/RCAN/SwinIR/LFMamba)
+        # V2.2: Hybrid upsampler — 3×3 for 1st stage (spatial mixing at LR),
+        # 1×1 for 2nd stage (saves 6.3G FLOPs; LFMamba uses 1×1 for upsampling).
+        # ICNR init prevents checkerboard artifacts on the 1×1 stage.
         if scale == 4:
             self.up = nn.Sequential(
                 nn.Conv2d(channels, channels * 4, 3, padding=1, bias=False),
                 nn.PixelShuffle(2),
                 nn.LeakyReLU(0.2, inplace=True),
-                nn.Conv2d(channels, channels * 4, 3, padding=1, bias=False),
+                nn.Conv2d(channels, channels * 4, 1, bias=False),  # V2.2: 3×3→1×1
                 nn.PixelShuffle(2),
                 nn.LeakyReLU(0.2, inplace=True),
             )
@@ -1051,8 +1112,8 @@ class ReconstructionHead(nn.Module):
         self.output = nn.Conv2d(channels, 1, 3, padding=1, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        r = self.refine(x)
-        r = (r + x) * self.ca(r + x)
+        r = self.refine(x) + x  # residual shortcut
+        r = r * self.ca(r)       # channel attention modulation
         up = self.up(r)
         return self.output(up)
 
@@ -1302,6 +1363,63 @@ if __name__ == "__main__":
     except ImportError:
         print("\n🧮 FLOPs: (install fvcore for precise Track 2 FLOPs count)")
         print("   pip install fvcore")
+
+    # 2.5 THOP FLOPs (Alternative count — cross-validates fvcore)
+    try:
+        from thop import profile, clever_format
+    except ImportError:
+        import subprocess, sys
+        print("\n📦 Installing thop...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "thop", "-q"])
+        from thop import profile, clever_format
+
+    model.eval()
+    dummy_input_thop = torch.randn(1, 1, 160, 160, device="cuda")
+    flops_thop, params_thop = profile(model, inputs=(dummy_input_thop, ), verbose=False)
+    flops_str, params_str = clever_format([flops_thop, params_thop], "%.3f")
+
+    print(f"\n🧮 THOP FLOPs (5x5x32x32): {flops_str}  ({flops_thop/1e9:.3f}G)")
+    print(f"📋 THOP Params: {params_str}  ({params_thop/1e6:.3f}M)")
+
+    # Dimension validation at multiple resolutions
+    print("\n📐 Dimension Validation:")
+    test_sizes = [
+        (32, 32, "NTIRE standard (32×32 per view)"),
+        (64, 64, "Double patch (64×64 per view)"),
+        (128, 128, "Large patch (128×128 per view)"),
+    ]
+    angRes = 5
+    scale = 4
+    all_pass = True
+    for h, w, desc in test_sizes:
+        H_in, W_in = angRes * h, angRes * w
+        H_out, W_out = angRes * h * scale, angRes * w * scale
+        x_test = torch.randn(1, 1, H_in, W_in, device="cuda")
+        with torch.no_grad():
+            y_test = model(x_test)
+        ok = y_test.shape == (1, 1, H_out, W_out)
+        status = "✅" if ok else "❌"
+        print(f"   {status} {desc}: (1,1,{H_in},{W_in}) → {tuple(y_test.shape)}"
+              f"  expected (1,1,{H_out},{W_out})")
+        if not ok:
+            all_pass = False
+    if all_pass:
+        print("   ✅ All dimension checks passed!")
+
+    # Budget summary
+    print(f"\n{'─'*50}")
+    print(f"📊 BUDGET SUMMARY (Track 2 Limits)")
+    print(f"{'─'*50}")
+    param_pct = params / 1_000_000 * 100
+    print(f"   Params:  {params:,} / 1,000,000  ({param_pct:.1f}% used)")
+    try:
+        flop_pct = flops / 20_000_000_000 * 100
+        print(f"   FLOPs:   {flops/1e9:.3f}G / 20.000G  ({flop_pct:.1f}% used)")
+        headroom = 20_000_000_000 - flops
+        print(f"   Headroom: {headroom/1e6:.0f}M FLOPs remaining")
+    except NameError:
+        pass
+    print(f"{'─'*50}")
 
     # 3. Forward/Backward Sanity Check
     x = torch.randn(1, 1, 160, 160, device="cuda")

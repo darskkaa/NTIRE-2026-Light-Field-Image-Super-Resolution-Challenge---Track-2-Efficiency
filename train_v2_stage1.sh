@@ -29,10 +29,10 @@ header "MLFIM V2 — Stage 1: Pre-training"
 MODEL_NAME="MyEfficientLFNetV2_MLFIM"
 ANGRES=5
 SCALE=4
-EPOCHS=60           # V2: 60 (was 50; extra 10ep for better feature init)
+EPOCHS=90           # V2.3: 60→90 (deeper MLFIM feature learning for 800K model)
 BATCH=4
-LR=2e-4             # LFMamba's proven pretrain LR
-MASK_RATIO=0.25
+LR=3e-4             # V2.3: match LFTransMamba pretrain LR
+MASK_RATIO=0.25     # LFTransMamba (1st NTIRE 2025) default — proven optimal for MLFIM
 LOSS_TYPE=charbonnier  # SOTA: pure pixel loss for max PSNR
 NUM_WORKERS=16
 

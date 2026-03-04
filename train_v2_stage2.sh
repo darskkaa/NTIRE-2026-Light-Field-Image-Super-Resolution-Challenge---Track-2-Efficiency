@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# V2 Stage 2: Fine-tuning (120 epochs, max-PSNR recipe)
+# V2 Stage 2: Fine-tuning (200 epochs, max-PSNR recipe)
 # =============================================================================
 # Usage: bash train_v2_stage2.sh <path_to_stage1_best.pth>
 #
@@ -9,8 +9,8 @@
 #   - β2: 0.99 (LFTransMamba — faster 2nd-moment adaptation)
 #   - Weight decay: 5e-5 (reduced — less regularization for fitting)
 #   - Loss: Pure Charbonnier (SwinIR/HAT/LFMamba/LFTransMamba all use L1/Charb)
-#   - Grad accum 2 steps → effective batch=8
-#   - Cosine eta_min: 5e-7 (deeper tail for EMA distillation)
+#   - Grad accum 2 steps → effective batch=8 (2× more optimizer steps)
+#   - Cosine eta_min: 1e-7 (deep tail for final polish)
 # =============================================================================
 
 set -e
@@ -47,13 +47,13 @@ PRETRAIN_CKPT="$1"
 MODEL_NAME="MyEfficientLFNetV2_MLFIM"
 ANGRES=5
 SCALE=4
-EPOCHS=120           # Extended: 120ep for deep cosine tail + EMA polish
+EPOCHS=200           # V2.3: 120→200 for deep cosine tail convergence
 BATCH=4
-LR=3e-4              # LFTransMamba recipe (1st NTIRE 2025)
+LR=3e-4              # LFTransMamba 1st-place recipe (safe for finetuning)
 BETA2=0.99            # LFTransMamba: faster adaptation for finetune
 WEIGHT_DECAY=5e-5     # Reduced: less regularization = more fitting capacity
-ETA_MIN=5e-7          # Deep cosine tail for EMA distillation
-GRAD_ACCUM=2          # Effective batch = 4 × 2 = 8
+ETA_MIN=1e-7          # V2.3: deeper tail for final polish
+GRAD_ACCUM=2          # Eff batch = 4 × 2 = 8 (doubles opt steps vs accum=4)
 LOSS_TYPE=charbonnier  # SOTA: pure pixel loss for max PSNR
 NUM_WORKERS=16
 
