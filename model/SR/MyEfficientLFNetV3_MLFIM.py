@@ -131,8 +131,8 @@ class get_model(nn.Module):
         # CRITICAL: channels MUST be divisible by 4 for BMDMambaLayer's 4-way
         # channel split (C4 = channels // 4). 45 % 4 = 1 → last group gets
         # 12 channels but Mamba expects 11 → shape mismatch crash.
-        self.channels   = 48      # Channels for wide channel capacity
-        self.n_sa       = 3       # Reduced 4→3 to fit <20G FLOP limit (saves 2.0G)
+        self.channels   = 48      # Wide channels for 4-way BMDMamba split
+        self.n_sa       = 4       # Restored to 4 (trimmed hlfr.refine to compensate FLOPs)
         self.n_epi      = 3       # Matches LFMamba's 3 EPISSM depth
         self.d_state    = 16
         self.d_conv     = 4
@@ -1100,11 +1100,10 @@ class ReconstructionHead(nn.Module):
 
     def __init__(self, channels, scale):
         super().__init__()
-        # Two-conv refine for better spatial mixing before upscale
+        # Single 3x3 refine conv (trimmed from two to fit <20G FLOPs with n_sa=4)
         self.refine = nn.Sequential(
             nn.Conv2d(channels, channels, 3, padding=1, bias=False),
-            nn.LeakyReLU(0.1, inplace=True),  # V3 FIX: 0.2→0.1 matching LFTransMamba
-            nn.Conv2d(channels, channels, 3, padding=1, bias=False),
+            nn.LeakyReLU(0.1, inplace=True),
         )
 
         # Channel attention
