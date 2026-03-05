@@ -39,7 +39,8 @@ def main(args):
     logger.log_string("The number of training data is: %d" % len(train_Dataset))
     train_loader = torch.utils.data.DataLoader(dataset=train_Dataset, num_workers=args.num_workers,
                                                batch_size=args.batch_size, shuffle=True,
-                                               pin_memory=True, prefetch_factor=4 if args.num_workers > 0 else None,
+                                               pin_memory=True, drop_last=True,
+                                               prefetch_factor=4 if args.num_workers > 0 else None,
                                                persistent_workers=True if args.num_workers > 0 else False)
 
     ''' DATA Validation LOADING '''

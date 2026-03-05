@@ -270,6 +270,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=True,
         pin_memory=True,
+        drop_last=True,  # LFTransMamba match: prevents incomplete last batch
         prefetch_factor=4 if args.num_workers > 0 else None,
         persistent_workers=True if args.num_workers > 0 else False,
     )
