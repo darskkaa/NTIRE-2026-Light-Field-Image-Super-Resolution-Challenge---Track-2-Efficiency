@@ -152,6 +152,13 @@ class get_model(nn.Module):
         self.mlfim_mask_ratio = getattr(args, 'mlfim_mask_ratio', 0.0)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, C), requires_grad=True)
 
+        # Angular position embedding (from LFTransMamba — critical for view awareness)
+        # Adds a learnable per-view bias so the model can distinguish which angular
+        # position each feature belongs to. Cost: angRes² × C = 25 × 48 = 1200 params.
+        self.ang_embed = nn.Parameter(
+            torch.zeros(1, C, self.angRes ** 2, 1, 1), requires_grad=True
+        )
+
         # ---- MODULE 1: 3D Conv IFE (Reduced: 4 layers → 2 layers) -----------
         # V10.3: Mamba blocks downstream provide ample transformation capacity,
         # so IFE only needs a projection + one refinement pass. Saves ~40K params
@@ -246,6 +253,9 @@ class get_model(nn.Module):
                          u=angRes, v=angRes)
         buffer = self.conv_init0(x_5d)
         buffer_init = self.conv_init(buffer) + buffer  # residual
+
+        # Angular embedding — per-view positional identity (LFTransMamba)
+        buffer_init = buffer_init + self.ang_embed
 
         # ---- MLFIM: Feature-level masking (train only) -------------------
         # Masks random spatial tokens and replaces with learned mask_token.
