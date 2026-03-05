@@ -5,10 +5,15 @@ Uses fvcore (official required library) to measure:
   - Parameters (limit: < 1,000,000)
   - FLOPs (limit: < 20G with input 5x5x32x32)
 
-Also measures inference time as additional metric.
+Also validates:
+  - Output shape correctness at multiple resolutions
+  - Forward/backward gradient flow
+  - THOP cross-validation of FLOPs
+  - Inference time (GPU)
 
 Usage:
-  python check_efficiency.py --model_name MyEfficientLFNetV10
+  python check_efficiency.py
+  python check_efficiency.py --model_name MyEfficientLFNetV3_MLFIM
 """
 
 import argparse
@@ -122,7 +127,7 @@ def measure_inference_time(model, input_tensor, warmup=10, runs=50):
 
 def main():
     parser = argparse.ArgumentParser(description="NTIRE 2026 Track 2 Efficiency Check")
-    parser.add_argument("--model_name", type=str, default="MyEfficientLFNetV10",
+    parser.add_argument("--model_name", type=str, default="MyEfficientLFNetV3_MLFIM",
                         help="Model name (must exist in model/SR/)")
     parser.add_argument("--angRes", type=int, default=5, help="Angular resolution")
     parser.add_argument("--scale_factor", type=int, default=4, help="Scale factor")
@@ -211,6 +216,91 @@ def main():
         flop_pass = None
         print("  ⚠️  Could not measure FLOPs (fvcore not available)")
 
+    # ---- THOP Cross-Validation ----
+    thop_pass = True
+    print("\n" + "=" * 60)
+    print("🔄 THOP FLOPs (cross-validation)")
+    print("=" * 60)
+    try:
+        from thop import profile, clever_format
+        thop_input = torch.randn(1, 1, H, W, device=device)
+        flops_thop, params_thop = profile(model, inputs=(thop_input, ), verbose=False)
+        flops_str, params_str = clever_format([flops_thop, params_thop], "%.3f")
+        print(f"  THOP FLOPs:   {flops_str}  ({flops_thop/1e9:.3f}G)")
+        print(f"  THOP Params:  {params_str}  ({params_thop/1e6:.3f}M)")
+        if total_flops is not None:
+            ratio = flops_thop / total_flops if total_flops > 0 else 0
+            print(f"  THOP/fvcore:  {ratio:.2f}x  (expected ~1.0x)")
+    except ImportError:
+        print("  ⚠️  thop not installed (pip install thop) — skipping")
+    except Exception as e:
+        print(f"  ⚠️  THOP error: {e}")
+
+    # ---- Dimension Validation ----
+    print("\n" + "=" * 60)
+    print("📐 DIMENSION VALIDATION")
+    print("=" * 60)
+    dim_pass = True
+    test_sizes = [
+        (32, 32, "NTIRE standard (32×32 per view)"),
+        (64, 64, "Double patch (64×64 per view)"),
+        (128, 128, "Training patch (128×128 per view)"),
+    ]
+    angRes = args.angRes
+    scale = args.scale_factor
+    for h, w, desc in test_sizes:
+        H_in, W_in = angRes * h, angRes * w
+        H_out, W_out = angRes * h * scale, angRes * w * scale
+        x_test = torch.randn(1, 1, H_in, W_in, device=device)
+        try:
+            with torch.no_grad():
+                y_test = model(x_test)
+            ok = y_test.shape == (1, 1, H_out, W_out)
+            status = "✅" if ok else "❌"
+            print(f"  {status} {desc}: (1,1,{H_in},{W_in}) → {tuple(y_test.shape)}"
+                  f"  expected (1,1,{H_out},{W_out})")
+            if not ok:
+                dim_pass = False
+        except Exception as e:
+            print(f"  ❌ {desc}: CRASHED — {e}")
+            dim_pass = False
+    print(f"  Status: {'✅ All shapes correct' if dim_pass else '❌ Shape mismatch detected'}")
+
+    # ---- Forward / Backward Sanity ----
+    print("\n" + "=" * 60)
+    print("🧪 FORWARD / BACKWARD SANITY")
+    print("=" * 60)
+    grad_pass = True
+    try:
+        model.eval()
+        x_fwd = torch.randn(1, 1, H, W, device=device)
+        with torch.no_grad():
+            y_fwd = model(x_fwd)
+        expected_shape = (1, 1, H * scale, W * scale)
+        fwd_ok = y_fwd.shape == expected_shape
+        nan_ok = not torch.isnan(y_fwd).any().item()
+        inf_ok = not torch.isinf(y_fwd).any().item()
+        print(f"  Forward shape: {'✅' if fwd_ok else '❌'} {tuple(y_fwd.shape)}")
+        print(f"  No NaN:        {'✅' if nan_ok else '❌'}")
+        print(f"  No Inf:        {'✅' if inf_ok else '❌'}")
+        if not (fwd_ok and nan_ok and inf_ok):
+            grad_pass = False
+
+        model.train()
+        x_bwd = torch.randn(1, 1, H, W, device=device, requires_grad=True)
+        y_bwd = model(x_bwd)
+        y_bwd.mean().backward()
+        grad_exists = x_bwd.grad is not None
+        grad_no_nan = grad_exists and not torch.isnan(x_bwd.grad).any().item()
+        print(f"  Backward grad: {'✅' if grad_exists else '❌'}")
+        print(f"  Grad no NaN:   {'✅' if grad_no_nan else '❌'}")
+        if not (grad_exists and grad_no_nan):
+            grad_pass = False
+        model.eval()
+    except Exception as e:
+        print(f"  ❌ CRASHED: {e}")
+        grad_pass = False
+
     # ---- Inference Time ----
     if not args.skip_time and device == "cuda":
         print("\n" + "=" * 60)
@@ -231,7 +321,7 @@ def main():
     print("🏁 FINAL VERDICT")
     print("=" * 60)
 
-    all_pass = param_pass and (flop_pass is True or flop_pass is None)
+    all_pass = param_pass and (flop_pass is True or flop_pass is None) and dim_pass and grad_pass
 
     if param_pass:
         print(f"  ✅ Parameters: {num_params:,} / {PARAM_LIMIT:,} ({param_pct:.1f}%)")
@@ -245,10 +335,14 @@ def main():
     else:
         print(f"  ⚠️  FLOPs:      not measured (install fvcore)")
 
+    print(f"  {'✅' if dim_pass else '❌'} Dimensions: all output shapes correct" if dim_pass
+          else f"  ❌ Dimensions: shape mismatch detected")
+    print(f"  {'✅' if grad_pass else '❌'} Gradients: forward/backward clean")
+
     if all_pass:
-        print("\n  🎉 MODEL QUALIFIES FOR NTIRE 2026 TRACK 2!")
+        print(f"\n  🎉 MODEL QUALIFIES FOR NTIRE 2026 TRACK 2!")
     else:
-        print("\n  🚫 MODEL DOES NOT QUALIFY — fix limits above!")
+        print(f"\n  🚫 MODEL DOES NOT QUALIFY — fix failing checks above!")
 
     print("=" * 60)
 
