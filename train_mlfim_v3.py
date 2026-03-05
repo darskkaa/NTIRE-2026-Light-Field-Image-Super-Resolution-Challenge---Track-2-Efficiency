@@ -58,10 +58,10 @@ def parse_mlfim_args():
     parser.add_argument('--loss_warmup_epochs', type=int, default=0,
                         help='Number of finetune epochs to use L1-only before '
                              'switching to composite loss (0 = no warmup)')
-    parser.add_argument('--loss_type', type=str, default='charbonnier',
-                        choices=['charbonnier', 'composite'],
-                        help='Loss function: charbonnier (max PSNR, SOTA default) '
-                             'or composite (Charb+FFT+SSIM+Grad+Ang)')
+    parser.add_argument('--loss_type', type=str, default='l1',
+                        choices=['l1', 'charbonnier', 'composite'],
+                        help='Loss function: l1 (LFTransMamba default), '
+                             'charbonnier, or composite (Charb+FFT+SSIM+Grad+Ang)')
     # NOTE: --beta2, --weight_decay, --eta_min removed.
     # All published LFSR papers (LFTransMamba, MLFSR, SwinIR, HAT, MambaIR)
     # use plain Adam (no weight decay) with StepLR (not cosine).
@@ -331,16 +331,18 @@ def main():
     logger.log_string(f'Parameters: {params:,} ({params/1e6:.3f}M)')
 
     # ---- EMA ----
-    ema = ModelEMA(net, decay=0.9995)  # V2.3: 0.999→0.9995 for larger model
+    ema = ModelEMA(net, decay=0.999)  # LFTransMamba exact value: 0.999
     # BUG FIX 12: Restore EMA state on pretrain resume
     if _resume_ema is not None and stage == 'pretrain':
         ema.load_state_dict(_resume_ema)
         logger.log_string('EMA state restored from checkpoint')
     else:
-        logger.log_string('EMA enabled (decay=0.9995, fresh start)')
+        logger.log_string('EMA enabled (decay=0.999, fresh start)')
 
     # ---- Loss functions ----
-    # Charbonnier criterion (SOTA default for max PSNR — SwinIR/HAT/LFMamba/LFTransMamba)
+    # LFTransMamba ground truth: plain L1Loss for all training.
+    l1_criterion = nn.L1Loss().to(device)
+    # Charbonnier kept as alternative (not default)
     charb_eps = getattr(args, 'charbonnier_eps', 1e-9)
     class CharbonnierLoss(nn.Module):
         def __init__(self, eps):
@@ -349,46 +351,41 @@ def main():
         def forward(self, pred, target, data_info=None):
             pred, target = pred.float(), target.float()
             return torch.mean(torch.sqrt((pred - target) ** 2 + self.eps ** 2))
-
     charbonnier_criterion = CharbonnierLoss(charb_eps).to(device)
-    l1_criterion = nn.L1Loss().to(device)
     # Composite criterion (only created if needed)
     composite_criterion = None
     if args.loss_type == 'composite' and stage == 'finetune':
         composite_criterion = MODEL.get_loss(args).to(device)
 
     logger.log_string(f'Loss type: {args.loss_type}')
-    if args.loss_type == 'charbonnier':
-        logger.log_string('  → Pure Charbonnier (eps=1e-9) — max PSNR mode')
-    elif stage == 'pretrain':
-        logger.log_string('  → Pre-training: L1 (entire stage)')
+    if args.loss_type == 'l1':
+        logger.log_string('  → L1Loss (LFTransMamba default)')
+    elif args.loss_type == 'charbonnier':
+        logger.log_string('  → Charbonnier (eps=1e-9)')
     else:
-        logger.log_string(f'  → Fine-tuning: L1 for epochs 1-{args.loss_warmup_epochs}, '
-                         f'then composite (Charb+FFT+SSIM+Grad+Ang)')
+        logger.log_string(f'  → Composite (Charb+FFT+SSIM+Grad+Ang)')
 
     # ---- Optimizer ----
-    # All published LFSR papers use plain Adam (not AdamW, no weight decay):
-    #   LFTransMamba (1st NTIRE 2025): Adam, β2=0.99
-    #   MLFSR (ACCV 2024): Adam, β2=0.999
-    #   SwinIR/HAT/MambaIR: Adam, β2=0.99
+    # LFTransMamba (1st NTIRE 2025) exact config from lfsr.py:
+    #   Adam(betas=(0.99, 0.999), eps=1e-08, weight_decay=0.0)
     lr = args.lr
 
     optimizer = torch.optim.Adam(
         [p for p in net.parameters() if p.requires_grad],
         lr=lr,
-        betas=(0.9, 0.99),
+        betas=(0.99, 0.999),
         eps=1e-08,
     )
-    logger.log_string(f'Optimizer: Adam, LR={lr}, β=(0.9, 0.99)')
+    logger.log_string(f'Optimizer: Adam, LR={lr}, β=(0.99, 0.999)')
 
     # ---- Scheduler ----
-    # LFTransMamba (1st NTIRE 2025): StepLR, ×0.5 every 25 epochs
-    # MLFSR: StepLR, ×0.5 every 15 epochs
-    # All LFSR papers use step decay, not cosine annealing.
+    # LFTransMamba Track 2 exact config: train-lr-scheduler=3
+    #   = StepLR(step_size=80, gamma=0.5) for 100 epochs
+    # This means LR stays constant for 80 epochs, then halves once.
     scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=25, gamma=0.5
+        optimizer, step_size=80, gamma=0.5
     )
-    logger.log_string(f'Scheduler: StepLR ×0.5 every 25 epochs')
+    logger.log_string(f'Scheduler: StepLR ×0.5 every 80 epochs')
 
     # Restore optimizer/scheduler state on pretrain resume
     if _resume_optimizer is not None and stage == 'pretrain':
@@ -420,8 +417,9 @@ def main():
                           f'lr={current_lr:.2e}]:')
 
         # Select loss function based on loss_type and warmup schedule
-        if args.loss_type == 'charbonnier':
-            # SOTA max-PSNR: pure Charbonnier for entire training
+        if args.loss_type == 'l1':
+            criterion = l1_criterion
+        elif args.loss_type == 'charbonnier':
             criterion = charbonnier_criterion
         elif stage == 'pretrain':
             criterion = l1_criterion
@@ -431,8 +429,7 @@ def main():
                 logger.log_string(f'  → Using L1 loss (warmup: epochs 1-{args.loss_warmup_epochs})')
         else:
             assert composite_criterion is not None, (
-                "composite_criterion is None — use --loss_type charbonnier, "
-                "or set --loss_warmup_epochs > 0 for pretrain stage."
+                "composite_criterion is None — use --loss_type l1 or charbonnier."
             )
             criterion = composite_criterion
             if epoch == args.loss_warmup_epochs and args.loss_warmup_epochs > 0:

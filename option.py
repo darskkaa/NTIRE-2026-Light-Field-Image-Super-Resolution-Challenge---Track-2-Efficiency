@@ -56,7 +56,7 @@ if args.task == 'SR':
     args.angRes_in = args.angRes
     args.angRes_out = args.angRes
     args.patch_size_for_test = 32
-    args.stride_for_test = 16
+    args.stride_for_test = 8  # LFTransMamba: stride=8 with patch_size=32 (75% overlap)
     args.minibatch_for_test = 1
 
 del args.angRes

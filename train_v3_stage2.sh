@@ -47,10 +47,10 @@ MODEL_NAME="MyEfficientLFNetV3_MLFIM"
 ANGRES=5
 SCALE=4
 EPOCHS=200
-BATCH=4
-LR=3e-4              # LFTransMamba 1st-place recipe
-GRAD_ACCUM=2          # Eff batch = 4 × 2 = 8
-LOSS_TYPE=charbonnier  # SOTA: pure pixel loss for max PSNR
+BATCH=3               # LFTransMamba Track 2 exact value
+LR=2e-4               # LFTransMamba Track 2: 2e-4
+GRAD_ACCUM=2           # Eff batch = 3 × 2 = 6
+LOSS_TYPE=l1           # LFTransMamba: L1Loss
 NUM_WORKERS=16
 
 # ---- PATHS ----
@@ -62,8 +62,8 @@ info "Model:          $MODEL_NAME"
 info "Checkpoint:     $PRETRAIN_CKPT"
 info "Epochs:         $EPOCHS"
 info "Batch:          $BATCH × $GRAD_ACCUM accum = $((BATCH * GRAD_ACCUM)) effective"
-info "LR:             $LR (StepLR ×0.5/25ep)"
-info "Loss:           $LOSS_TYPE (pure pixel loss)"
+info "LR:             $LR (StepLR ×0.5/80ep)"
+info "Loss:           $LOSS_TYPE (LFTransMamba default)"
 echo ""
 
 # =============================================================================

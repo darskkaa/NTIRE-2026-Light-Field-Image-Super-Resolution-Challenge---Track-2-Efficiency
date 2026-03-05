@@ -103,17 +103,17 @@ def main(args):
     criterion = MODEL.get_loss(args).to(device)
 
 
-    ''' Optimizer - Adam (all LFSR SOTA papers: LFTransMamba, MLFSR, SwinIR, HAT, MambaIR) '''
+    ''' Optimizer - Adam (LFTransMamba exact: betas=(0.99, 0.999)) '''
     optimizer = torch.optim.Adam(
         [paras for paras in net.parameters() if paras.requires_grad == True],
         lr=args.lr,
-        betas=(0.9, 0.99),
+        betas=(0.99, 0.999),
         eps=1e-08,
     )
     
-    ''' Learning Rate Scheduler - StepLR (LFTransMamba 1st NTIRE 2025: ×0.5 every 25 epochs) '''
+    ''' Learning Rate Scheduler - StepLR (LFTransMamba Track 2: step_size=80) '''
     scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=25, gamma=0.5
+        optimizer, step_size=80, gamma=0.5
     )
     
     # Restore scheduler + optimizer state from checkpoint.
