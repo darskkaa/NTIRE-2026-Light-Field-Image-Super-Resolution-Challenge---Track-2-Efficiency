@@ -249,19 +249,9 @@ def augmentation(data, label):
     elif mode == 7:
         data = data.transpose(1, 0)[::-1, ::-1]  # 90° + 180°
         label = label.transpose(1, 0)[::-1, ::-1]
-    # Random gamma correction — simulates varying exposure/lighting.
-    # Applied to BOTH LR and HR so the target remains consistent.
-    # Helps the model generalize on real-world Lytro test images (different
-    # tonal distributions than synthetic training data).
-    # LR-only gamma is wrong — it changes the target mapping.
-    if random.random() < 0.3:  # 30% probability, conservative
-        gamma = random.uniform(0.7, 1.4)
-        # Clip to [0,1] after gamma to prevent overflow in float32 Y-channel
-        data = np.clip(np.power(np.clip(data, 1e-8, 1.0), gamma), 0.0, 1.0)
-        label = np.clip(np.power(np.clip(label, 1e-8, 1.0), gamma), 0.0, 1.0)
-    # CutBlur augmentation (Yoo et al., CVPR 2020) — mixes LR↔HR patches
-    # to improve feature robustness. 30% probability, conservative.
-    if random.random() < 0.3:
-        data, label = cutblur(data, label)
+    # V3 FIX: Removed gamma correction and CutBlur augmentation.
+    # LFTransMamba (1st NTIRE 2025) uses ONLY 8-mode dihedral augmentation.
+    # Gamma correction warps the LR→HR target mapping, hurting PSNR.
+    # CutBlur is unproven on light field data and adds noise to the signal.
     return data, label
 

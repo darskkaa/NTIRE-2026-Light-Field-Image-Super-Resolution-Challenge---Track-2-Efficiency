@@ -165,14 +165,16 @@ class get_model(nn.Module):
         # and ~1G FLOPs, freeing budget for ASG and LCE.
         self.conv_init0 = nn.Conv3d(1, C, kernel_size=(1, 3, 3),
                                     padding=(0, 1, 1), bias=False)
-        # V10.5: Restored to 3-layer IFE (V10.3 had 2, original LFMamba had 4).
-        # Extra refinement layer provides richer initial features for Mamba blocks.
-        # Cost: ~17K params, ~0.45G FLOPs. Budget: 573K/19.1G (within limits).
+        # V3 FIX: Restored to 3-layer IFE matching LFTransMamba (was 2, should be 3).
+        # LeakyReLU slope 0.2→0.1 matching LFTransMamba exactly.
+        # Cost: ~21K extra params, ~0.5G FLOPs. Well within 1M/20G budget.
         self.conv_init = nn.Sequential(
             nn.Conv3d(C, C, kernel_size=(1, 3, 3), padding=(0, 1, 1), bias=False),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.LeakyReLU(0.1, inplace=True),
             nn.Conv3d(C, C, kernel_size=(1, 3, 3), padding=(0, 1, 1), bias=False),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv3d(C, C, kernel_size=(1, 3, 3), padding=(0, 1, 1), bias=False),
+            nn.LeakyReLU(0.1, inplace=True),
         )
 
         # ---- MODULE 2: Spatial-Angular Feature Learning -------------------
@@ -254,13 +256,11 @@ class get_model(nn.Module):
         buffer = self.conv_init0(x_5d)
         buffer_init = self.conv_init(buffer) + buffer  # residual
 
-        # Angular embedding — per-view positional identity (LFTransMamba)
-        buffer_init = buffer_init + self.ang_embed
-
         # ---- MLFIM: Feature-level masking (train only) -------------------
-        # Masks random spatial tokens and replaces with learned mask_token.
-        # Applied AFTER IFE so features are meaningful; zero inference cost.
-        # Reference: LFTransMamba random_masking() — official implementation
+        # V3 FIX: Masking BEFORE ang_embed (matches LFTransMamba exactly).
+        # Masking after ang_embed means mask tokens already have position info,
+        # so the model never learns to infer position from context — defeating
+        # the purpose of MLFIM pre-training.
         if self.training and self.mlfim_mask_ratio > 0:
             B_m, C_m, A_m, h_m, w_m = buffer_init.shape
             feat_seq = rearrange(buffer_init,
@@ -269,7 +269,11 @@ class get_model(nn.Module):
             feat_seq = self.random_masking(feat_seq, self.mlfim_mask_ratio)
             buffer_init = rearrange(feat_seq,
                                    '(b u v) (h w) c -> b c (u v) h w',
-                                   b=B_m, u=angRes, v=angRes, h=h_m, w=w_m)
+                                    b=B_m, u=angRes, v=angRes, h=h_m, w=w_m)
+
+        # Angular embedding — per-view positional identity (LFTransMamba)
+        # Applied AFTER masking so model must infer position from context
+        buffer_init = buffer_init + self.ang_embed
 
         # ---- MODULE 2: Spatial-Angular Feature Learning -------------------
         feat = buffer_init
@@ -1099,7 +1103,7 @@ class ReconstructionHead(nn.Module):
         # Two-conv refine for better spatial mixing before upscale
         self.refine = nn.Sequential(
             nn.Conv2d(channels, channels, 3, padding=1, bias=False),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.LeakyReLU(0.1, inplace=True),  # V3 FIX: 0.2→0.1 matching LFTransMamba
             nn.Conv2d(channels, channels, 3, padding=1, bias=False),
         )
 
@@ -1113,24 +1117,26 @@ class ReconstructionHead(nn.Module):
             nn.Sigmoid(),
         )
 
-        # V2.2: Hybrid upsampler — 3×3 for 1st stage (spatial mixing at LR),
-        # 1×1 for 2nd stage (saves 6.3G FLOPs; LFMamba uses 1×1 for upsampling).
-        # ICNR init prevents checkerboard artifacts on the 1×1 stage.
+        # V3 NOVEL: Progressive 2-stage PixelShuffle (2×+2× = 4×)
+        # LFTransMamba uses single 4× PixelShuffle with 1×1 conv.
+        # Our 2-stage approach provides: (a) intermediate spatial mixing at 2× res,
+        # (b) ICNR init preventing checkerboard on both stages,
+        # (c) 3×3 conv at 1st stage for sub-pixel spatial refinement.
         if scale == 4:
             self.up = nn.Sequential(
                 nn.Conv2d(channels, channels * 4, 3, padding=1, bias=False),
                 nn.PixelShuffle(2),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Conv2d(channels, channels * 4, 1, bias=False),  # V2.2: 3×3→1×1
+                nn.LeakyReLU(0.1, inplace=True),  # V3 FIX: 0.2→0.1
+                nn.Conv2d(channels, channels * 4, 1, bias=False),
                 nn.PixelShuffle(2),
-                nn.LeakyReLU(0.2, inplace=True),
+                nn.LeakyReLU(0.1, inplace=True),  # V3 FIX: 0.2→0.1
             )
         else:
             self.up = nn.Sequential(
                 nn.Conv2d(channels, channels * scale * scale, 3,
                           padding=1, bias=False),
                 nn.PixelShuffle(scale),
-                nn.LeakyReLU(0.2, inplace=True),
+                nn.LeakyReLU(0.1, inplace=True),  # V3 FIX: 0.2→0.1
             )
 
         self.output = nn.Conv2d(channels, 1, 3, padding=1, bias=True)

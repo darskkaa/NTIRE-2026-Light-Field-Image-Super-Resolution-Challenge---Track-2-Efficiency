@@ -50,8 +50,8 @@ def parse_mlfim_args():
     parser = argparse.ArgumentParser(description="MLFIM Training V3 — Max PSNR")
     parser.add_argument('--stage', type=str, choices=['pretrain', 'finetune'],
                         required=True, help='Training stage')
-    parser.add_argument('--mlfim_mask_ratio', type=float, default=0.25,
-                        help='Mask ratio for MLFIM pre-training (default: 0.25)')
+    parser.add_argument('--mlfim_mask_ratio', type=float, default=0.35,
+                        help='Mask ratio for MLFIM pre-training (default: 0.35, LFTransMamba exact)')
     parser.add_argument('--grad_accum_steps', type=int, default=2,
                         help='Gradient accumulation steps for effective batch size '
                              '(effective_bs = batch_size * grad_accum_steps)')
@@ -331,13 +331,13 @@ def main():
     logger.log_string(f'Parameters: {params:,} ({params/1e6:.3f}M)')
 
     # ---- EMA ----
-    ema = ModelEMA(net, decay=0.999)  # LFTransMamba exact value: 0.999
+    ema = ModelEMA(net, decay=0.997)  # LFTransMamba exact value: 0.997 (line 627 of lfsr.py)
     # BUG FIX 12: Restore EMA state on pretrain resume
     if _resume_ema is not None and stage == 'pretrain':
         ema.load_state_dict(_resume_ema)
         logger.log_string('EMA state restored from checkpoint')
     else:
-        logger.log_string('EMA enabled (decay=0.999, fresh start)')
+        logger.log_string('EMA enabled (decay=0.997, fresh start)')
 
     # ---- Loss functions ----
     # LFTransMamba ground truth: plain L1Loss for all training.
@@ -443,8 +443,9 @@ def main():
                 logger.log_string('  → Switching to composite loss')
 
         # EMA decay bump in final 25% of training
+        # V3 FIX: Target 0.999 (was 0.9999, too aggressive for 0.997 base)
         if epoch >= int(args.epoch * 0.75):
-            ema.decay = 0.9999
+            ema.decay = 0.999
 
         loss_train, psnr_train, ssim_train = train_one_epoch(
             train_loader, device, net, criterion, optimizer, args,
@@ -458,10 +459,9 @@ def main():
 
         # Fix #5: Only build state dict on save/val epochs to avoid unnecessary CPU copies
         need_save = (epoch + 1) % 20 == 0
-        # Provide early validation at epoch 3 and 5 to verify PSNR fix, 
-        # then validate every 2 epochs
+        # Validate every 5 epochs + final epoch
         idx_e = epoch + 1
-        need_val = (idx_e in [3, 5]) or (idx_e >= 7 and idx_e % 2 == 1) or (idx_e == args.epoch)
+        need_val = (idx_e % 5 == 0) or (idx_e == args.epoch)
         state = None
         if need_save or need_val:
             save_path = str(checkpoints_dir) + (
