@@ -340,14 +340,12 @@ class get_model(nn.Module):
         ids_shuffle = torch.argsort(noise, dim=1)    # ascend: small=keep
         ids_restore = torch.argsort(ids_shuffle, dim=1)
 
-        # Keep unmasked tokens — SCALE by 1/(1-mask_ratio) so expected
-        # feature magnitude matches eval (inverted dropout principle)
+        # Keep unmasked tokens
         ids_keep = ids_shuffle[:, :len_keep]
         unmasked_x = torch.gather(
             x, dim=1,
             index=ids_keep.unsqueeze(-1).expand(-1, -1, D)
         )
-        unmasked_x = unmasked_x / (1.0 - mask_ratio)
 
         # Append learned mask tokens for the removed positions
         mask_tokens = self.mask_token.expand(

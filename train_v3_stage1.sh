@@ -33,7 +33,7 @@ SCALE=4
 EPOCHS=100          # LFTransMamba (1st NTIRE 2025): 100 epochs
 BATCH=4
 LR=3e-4             # LFTransMamba 1st-place recipe
-MASK_RATIO=0.25     # LFTransMamba default — proven optimal for MLFIM
+MASK_RATIO=0.0      # DISABLED — masking causes train/val feature mismatch (~20 dB gap)
 NUM_WORKERS=16
 
 # ---- PATHS (adjust for your setup) ----
