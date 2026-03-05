@@ -131,9 +131,9 @@ class get_model(nn.Module):
         # CRITICAL: channels MUST be divisible by 4 for BMDMambaLayer's 4-way
         # channel split (C4 = channels // 4). 45 % 4 = 1 → last group gets
         # 12 channels but Mamba expects 11 → shape mismatch crash.
-        self.channels   = 48      # V2.3: 44→48 for max capacity (48 % 4 = 0 ✅)
-        self.n_sa       = 4       # V2.3: 3→4 (fills 20G budget with wider C=48)
-        self.n_epi      = 3       # V2.2: 2→3 (matches LFMamba's 3 EPISSM depth)
+        self.channels   = 48      # Channels for wide channel capacity
+        self.n_sa       = 3       # Reduced 4→3 to fit <20G FLOP limit (saves 2.0G)
+        self.n_epi      = 3       # Matches LFMamba's 3 EPISSM depth
         self.d_state    = 16
         self.d_conv     = 4
         self.expand     = 2.0     # matching LFMamba's proven value
