@@ -5,9 +5,9 @@
 # Usage: bash train_v3_stage2.sh <path_to_stage1_best.pth>
 #
 # Research-backed hyperparameters:
-#   - LR: 3e-4 (LFTransMamba 1st-place NTIRE 2025 recipe)
-#   - Optimizer: Adam β=(0.9, 0.99) (LFTransMamba)
-#   - Scheduler: StepLR ×0.5 every 25 epochs (LFTransMamba)
+#   - LR: 2e-4 (LFTransMamba default)
+#   - Optimizer: Adam β=(0.99, 0.999) (LFTransMamba exact)
+#   - Scheduler: StepLR ×0.5 every 80 epochs (LFTransMamba Track 2 exact)
 #   - Loss: Pure Charbonnier (SwinIR/HAT/LFMamba/LFTransMamba all use L1/Charb)
 #   - Grad accum 2 steps → effective batch=8
 # =============================================================================

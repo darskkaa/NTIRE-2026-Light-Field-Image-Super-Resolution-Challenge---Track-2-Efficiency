@@ -109,7 +109,7 @@ class get_model(nn.Module):
     MyEfficientLFNet V3 (MLFIM)
 
     Pipeline:
-      1. IFE   — 3D Conv IFE (2-layer, angular-aware, -40K params vs v10.2)
+      1. IFE   — 3D Conv IFE (3-layer, angular-aware, matching LFTransMamba)
       2. SAFL  — Spatial-Angular Feature Learning
                  (N_sa groups of SpaSSM → AngSSM → SAM → FASS)
       3. EPFL  — EPI Feature Learning
@@ -149,7 +149,7 @@ class get_model(nn.Module):
         # Applied AFTER IFE, on feature maps — NOT on raw input pixels
         # NOTE: Default 0.0 (disabled) — MLFIM was designed for pre-training,
         # not end-to-end regularization. Enable via args for ablation.
-        self.mlfim_mask_ratio = getattr(args, 'mlfim_mask_ratio', 0.0)
+        self.mlfim_mask_ratio = getattr(args, 'mlfim_mask_ratio', 0.35)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, C), requires_grad=True)
 
         # Angular position embedding (from LFTransMamba — critical for view awareness)
@@ -159,10 +159,10 @@ class get_model(nn.Module):
             torch.zeros(1, C, self.angRes ** 2, 1, 1), requires_grad=True
         )
 
-        # ---- MODULE 1: 3D Conv IFE (Reduced: 4 layers → 2 layers) -----------
-        # V10.3: Mamba blocks downstream provide ample transformation capacity,
-        # so IFE only needs a projection + one refinement pass. Saves ~40K params
-        # and ~1G FLOPs, freeing budget for ASG and LCE.
+        # ---- MODULE 1: 3D Conv IFE (3-layer, matching LFTransMamba) --------
+        # V3 FIX: 3-layer IFE matching LFTransMamba's conv_init.
+        # Each Conv3d(C,C,(1,3,3)) = C² × 9 params ≈ 20.7K each.
+        # Total IFE: conv_init0 + 3 × conv_init = ~83K params, well within budget.
         self.conv_init0 = nn.Conv3d(1, C, kernel_size=(1, 3, 3),
                                     padding=(0, 1, 1), bias=False)
         # V3 FIX: Restored to 3-layer IFE matching LFTransMamba (was 2, should be 3).
@@ -337,7 +337,7 @@ class get_model(nn.Module):
 
         Args:
             x: (N, L, D) — feature sequence (N=B*U*V, L=h*w, D=channels)
-            mask_ratio: fraction of tokens to mask (official: 0.25)
+            mask_ratio: fraction of tokens to mask (LFTransMamba: 0.35)
 
         Returns:
             masked_x: (N, L, D) — same shape, masked tokens replaced

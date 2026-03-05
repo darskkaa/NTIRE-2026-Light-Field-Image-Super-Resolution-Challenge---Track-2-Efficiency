@@ -4,21 +4,21 @@ MLFIM Training V3 — Max-PSNR Pipeline
 Research-backed training recipe for NTIRE 2026 Track 2 Efficiency.
 
 Key design decisions (all backed by published LFSR papers):
-  1. Loss: Pure Charbonnier (SwinIR/HAT/LFMamba/LFTransMamba all use L1/Charb)
-  2. Optimizer: Adam with β1=0.9, β2=0.99 (LFTransMamba 1st NTIRE 2025)
-  3. Scheduler: StepLR ×0.5 every 25 epochs (LFTransMamba recipe)
-  4. LR: 3e-4 (LFTransMamba 1st-place recipe)
+  1. Loss: Pure L1 (LFTransMamba NTIRE 2025 default) or Charbonnier (alternative)
+  2. Optimizer: Adam with β1=0.99, β2=0.999 (LFTransMamba 1st NTIRE 2025 exact)
+  3. Scheduler: StepLR ×0.5 every 80 epochs (LFTransMamba Track 2 exact)
+  4. LR: 2e-4 (LFTransMamba default)
   5. No bfloat16: full float32 training (800K model doesn't need mixed precision)
-  6. CutBlur: Applied in data pipeline (utils_datasets.augmentation), not here
+  6. EMA: decay=0.997 (LFTransMamba exact)
 
 Usage:
   # Stage 1: MLFIM Pre-training (100 epochs)
-  python train_mlfim_v3.py --stage pretrain --mlfim_mask_ratio 0.25 --epoch 100 \\
-      --lr 3e-4 --model_name MyEfficientLFNetV3_MLFIM --loss_type charbonnier
+  python train_mlfim_v3.py --stage pretrain --mlfim_mask_ratio 0.35 --epoch 100 \\
+      --lr 2e-4 --model_name MyEfficientLFNetV3_MLFIM --loss_type l1
 
   # Stage 2: Fine-tuning (200 epochs, max-PSNR recipe)
-  python train_mlfim_v3.py --stage finetune --epoch 200 --lr 3e-4 \\
-      --loss_type charbonnier \\
+  python train_mlfim_v3.py --stage finetune --epoch 200 --lr 2e-4 \\
+      --loss_type l1 \\
       --path_pre_pth <stage1_best.pth> --model_name MyEfficientLFNetV3_MLFIM \\
       --use_pre_ckpt
 """
