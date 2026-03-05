@@ -314,8 +314,10 @@ class get_model(nn.Module):
         Masked tokens are replaced with a LEARNED mask_token parameter
         (not zeros — the model optimizes the replacement value).
 
-        This is applied at the feature level (after IFE), on the sequence
-        of spatial tokens (h*w) for each angular view independently.
+        CRITICAL: Uses inverted-dropout-style scaling on unmasked tokens.
+        Without this, features have ~(1-mask_ratio) expected magnitude during
+        training but 1.0 during eval, causing the reconstruction head to
+        overshoot at inference (the "dropout scaling" bug → ~20 dB gap).
 
         Reference: LFTransMamba random_masking() — OpenMeow/LFTransMamba
 
@@ -338,12 +340,14 @@ class get_model(nn.Module):
         ids_shuffle = torch.argsort(noise, dim=1)    # ascend: small=keep
         ids_restore = torch.argsort(ids_shuffle, dim=1)
 
-        # Keep unmasked tokens
+        # Keep unmasked tokens — SCALE by 1/(1-mask_ratio) so expected
+        # feature magnitude matches eval (inverted dropout principle)
         ids_keep = ids_shuffle[:, :len_keep]
         unmasked_x = torch.gather(
             x, dim=1,
             index=ids_keep.unsqueeze(-1).expand(-1, -1, D)
         )
+        unmasked_x = unmasked_x / (1.0 - mask_ratio)
 
         # Append learned mask tokens for the removed positions
         mask_tokens = self.mask_token.expand(
