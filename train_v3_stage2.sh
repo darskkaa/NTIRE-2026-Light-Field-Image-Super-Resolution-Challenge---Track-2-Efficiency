@@ -4,13 +4,12 @@
 # =============================================================================
 # Usage: bash train_v3_stage2.sh <path_to_stage1_best.pth>
 #
-# Research-backed hyperparameters (see implementation_plan.md):
+# Research-backed hyperparameters:
 #   - LR: 3e-4 (LFTransMamba 1st-place NTIRE 2025 recipe)
-#   - β2: 0.99 (LFTransMamba — faster 2nd-moment adaptation)
-#   - Weight decay: 5e-5 (reduced — less regularization for fitting)
+#   - Optimizer: Adam β=(0.9, 0.99) (LFTransMamba)
+#   - Scheduler: StepLR ×0.5 every 25 epochs (LFTransMamba)
 #   - Loss: Pure Charbonnier (SwinIR/HAT/LFMamba/LFTransMamba all use L1/Charb)
-#   - Grad accum 2 steps → effective batch=8 (2× more optimizer steps)
-#   - Cosine eta_min: 1e-7 (deep tail for final polish)
+#   - Grad accum 2 steps → effective batch=8
 # =============================================================================
 
 set -e
@@ -47,13 +46,10 @@ PRETRAIN_CKPT="$1"
 MODEL_NAME="MyEfficientLFNetV3_MLFIM"
 ANGRES=5
 SCALE=4
-EPOCHS=200           # V2.3: 120→200 for deep cosine tail convergence
+EPOCHS=200
 BATCH=4
-LR=3e-4              # LFTransMamba 1st-place recipe (safe for finetuning)
-BETA2=0.99            # LFTransMamba: faster adaptation for finetune
-WEIGHT_DECAY=5e-5     # Reduced: less regularization = more fitting capacity
-ETA_MIN=1e-7          # V2.3: deeper tail for final polish
-GRAD_ACCUM=2          # Eff batch = 4 × 2 = 8 (doubles opt steps vs accum=4)
+LR=3e-4              # LFTransMamba 1st-place recipe
+GRAD_ACCUM=2          # Eff batch = 4 × 2 = 8
 LOSS_TYPE=charbonnier  # SOTA: pure pixel loss for max PSNR
 NUM_WORKERS=16
 
@@ -66,9 +62,7 @@ info "Model:          $MODEL_NAME"
 info "Checkpoint:     $PRETRAIN_CKPT"
 info "Epochs:         $EPOCHS"
 info "Batch:          $BATCH × $GRAD_ACCUM accum = $((BATCH * GRAD_ACCUM)) effective"
-info "LR:             $LR → cosine → $ETA_MIN"
-info "β2:             $BETA2 (LFTransMamba)"
-info "Weight decay:   $WEIGHT_DECAY"
+info "LR:             $LR (StepLR ×0.5/25ep)"
 info "Loss:           $LOSS_TYPE (pure pixel loss)"
 echo ""
 
@@ -106,9 +100,6 @@ python train_mlfim_v3.py \
     --batch_size "$BATCH" \
     --lr "$LR" \
     --epoch "$EPOCHS" \
-    --beta2 "$BETA2" \
-    --weight_decay "$WEIGHT_DECAY" \
-    --eta_min "$ETA_MIN" \
     --grad_accum_steps "$GRAD_ACCUM" \
     --loss_type "$LOSS_TYPE" \
     --use_pre_ckpt \

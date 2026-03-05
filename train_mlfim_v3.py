@@ -2,24 +2,23 @@
 MLFIM Training V3 — Max-PSNR Pipeline
 ======================================
 Research-backed training recipe for NTIRE 2026 Track 2 Efficiency.
-Inherits V2 recipe and adds bug fixes (see implementation_plan.md).
 
-Key design decisions (all cited in implementation_plan.md):
+Key design decisions (all backed by published LFSR papers):
   1. Loss: Pure Charbonnier (SwinIR/HAT/LFMamba/LFTransMamba all use L1/Charb)
-  2. LR: 3e-4 for finetune (LFTransMamba 1st-place recipe)
-  3. β2: 0.99 for finetune (LFTransMamba), 0.999 for pretrain (LFMamba)
-  4. Weight decay: 5e-5 finetune, 1e-4 pretrain
-  5. Cosine eta_min: 1e-7 (deep tail for final PSNR polish)
+  2. Optimizer: Adam with β1=0.9, β2=0.99 (LFTransMamba 1st NTIRE 2025)
+  3. Scheduler: StepLR ×0.5 every 25 epochs (LFTransMamba recipe)
+  4. LR: 3e-4 (LFTransMamba 1st-place recipe)
+  5. No bfloat16: full float32 training (800K model doesn't need mixed precision)
   6. CutBlur: Applied in data pipeline (utils_datasets.augmentation), not here
 
 Usage:
-  # Stage 1: MLFIM Pre-training (90 epochs)
-  python train_mlfim_v3.py --stage pretrain --mlfim_mask_ratio 0.25 --epoch 90 \\
+  # Stage 1: MLFIM Pre-training (100 epochs)
+  python train_mlfim_v3.py --stage pretrain --mlfim_mask_ratio 0.25 --epoch 100 \\
       --lr 3e-4 --model_name MyEfficientLFNetV3_MLFIM --loss_type charbonnier
 
   # Stage 2: Fine-tuning (200 epochs, max-PSNR recipe)
-  python train_mlfim_v3.py --stage finetune --epoch 200 --lr 3e-4 --beta2 0.99 \\
-      --weight_decay 5e-5 --loss_type charbonnier \\
+  python train_mlfim_v3.py --stage finetune --epoch 200 --lr 3e-4 \\
+      --loss_type charbonnier \\
       --path_pre_pth <stage1_best.pth> --model_name MyEfficientLFNetV3_MLFIM \\
       --use_pre_ckpt
 """
@@ -63,13 +62,9 @@ def parse_mlfim_args():
                         choices=['charbonnier', 'composite'],
                         help='Loss function: charbonnier (max PSNR, SOTA default) '
                              'or composite (Charb+FFT+SSIM+Grad+Ang)')
-    parser.add_argument('--beta2', type=float, default=0.999,
-                        help='Adam β2 (0.99 for finetune per LFTransMamba, '
-                             '0.999 for pretrain per LFMamba)')
-    parser.add_argument('--weight_decay', type=float, default=1e-4,
-                        help='AdamW weight decay (5e-5 for finetune, 1e-4 for pretrain)')
-    parser.add_argument('--eta_min', type=float, default=5e-7,
-                        help='Cosine scheduler minimum LR')
+    # NOTE: --beta2, --weight_decay, --eta_min removed.
+    # All published LFSR papers (LFTransMamba, MLFSR, SwinIR, HAT, MambaIR)
+    # use plain Adam (no weight decay) with StepLR (not cosine).
 
     mlfim_args, _ = parser.parse_known_args()
 
@@ -81,9 +76,6 @@ def parse_mlfim_args():
     base_args.grad_accum_steps = mlfim_args.grad_accum_steps
     base_args.loss_warmup_epochs = mlfim_args.loss_warmup_epochs
     base_args.loss_type = mlfim_args.loss_type
-    base_args.beta2 = mlfim_args.beta2
-    base_args.weight_decay = mlfim_args.weight_decay
-    base_args.eta_min = mlfim_args.eta_min
 
     return base_args
 
@@ -106,12 +98,10 @@ def train_one_epoch(train_loader, device, net, criterion, optimizer, args,
         data = data.to(device, non_blocking=True)
         label = label.to(device, non_blocking=True)
 
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            out = net(data, data_info)
-            # V3 Bug Fix 5: Always pass data_info to criterion.
-            # CharbonnierLoss accepts data_info as ignored kwarg.
-            # This replaces the fragile hasattr(criterion, 'angular_loss') dispatch.
-            loss = criterion(out, label, data_info)
+        # Full float32 — no autocast. 800K model doesn't need mixed precision,
+        # and bfloat16 caused a critical train/val precision mismatch (~20 dB gap).
+        out = net(data, data_info)
+        loss = criterion(out, label, data_info)
 
         # BUG FIX: Check NaN BEFORE dividing and accumulating.
         # If we divide NaN and then continue, stale NaN gradients remain
@@ -377,37 +367,30 @@ def main():
                          f'then composite (Charb+FFT+SSIM+Grad+Ang)')
 
     # ---- Optimizer ----
+    # All published LFSR papers use plain Adam (not AdamW, no weight decay):
+    #   LFTransMamba (1st NTIRE 2025): Adam, β2=0.99
+    #   MLFSR (ACCV 2024): Adam, β2=0.999
+    #   SwinIR/HAT/MambaIR: Adam, β2=0.99
     lr = args.lr
-    beta2 = args.beta2
-    wd = args.weight_decay
 
-    optimizer = torch.optim.AdamW(
+    optimizer = torch.optim.Adam(
         [p for p in net.parameters() if p.requires_grad],
         lr=lr,
-        betas=(0.9, beta2),
+        betas=(0.9, 0.99),
         eps=1e-08,
-        weight_decay=wd,
     )
-    logger.log_string(f'Optimizer: AdamW, LR={lr}, β2={beta2}, weight_decay={wd}')
+    logger.log_string(f'Optimizer: Adam, LR={lr}, β=(0.9, 0.99)')
 
     # ---- Scheduler ----
-    total_epochs = args.epoch
-    warmup_epochs = min(10 if stage == 'finetune' else 5, max(total_epochs // 10, 5))
-    eta_min = args.eta_min
-    main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_epochs - warmup_epochs, eta_min=eta_min
+    # LFTransMamba (1st NTIRE 2025): StepLR, ×0.5 every 25 epochs
+    # MLFSR: StepLR, ×0.5 every 15 epochs
+    # All LFSR papers use step decay, not cosine annealing.
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=25, gamma=0.5
     )
-    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs
-    )
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warmup_scheduler, main_scheduler],
-        milestones=[warmup_epochs],
-    )
-    logger.log_string(f'Scheduler: {warmup_epochs}ep warmup → cosine to {eta_min}')
+    logger.log_string(f'Scheduler: StepLR ×0.5 every 25 epochs')
 
-    # BUG FIX 12: Restore optimizer/scheduler state on pretrain resume
+    # Restore optimizer/scheduler state on pretrain resume
     if _resume_optimizer is not None and stage == 'pretrain':
         try:
             optimizer.load_state_dict(_resume_optimizer)
@@ -420,8 +403,6 @@ def main():
             logger.log_string('Scheduler state restored from checkpoint')
         except Exception as e:
             logger.log_string(f'Scheduler restore failed: {e}')
-            # BUG FIX: Fast-forward scheduler to match start_epoch so LR
-            # is correct for the resumed training position
             if start_epoch > 0:
                 for _ in range(start_epoch):
                     scheduler.step()

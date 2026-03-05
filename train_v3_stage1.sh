@@ -1,9 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# V3 Stage 1: MLFIM Pre-training (60 epochs, Charbonnier loss)
+# V3 Stage 1: MLFIM Pre-training (100 epochs, Charbonnier loss)
 # =============================================================================
 # Usage: bash train_v3_stage1.sh
 # Auto-downloads datasets and generates .h5 if not present.
+# Hyperparameters: LFTransMamba 1st NTIRE 2025 recipe.
 # =============================================================================
 
 set -e
@@ -29,11 +30,10 @@ header "MLFIM V3 — Stage 1: Pre-training"
 MODEL_NAME="MyEfficientLFNetV3_MLFIM"
 ANGRES=5
 SCALE=4
-EPOCHS=90           # V2.3: 60→90 (deeper MLFIM feature learning for 800K model)
+EPOCHS=100          # LFTransMamba (1st NTIRE 2025): 100 epochs
 BATCH=4
-LR=3e-4             # V2.3: match LFTransMamba pretrain LR
-MASK_RATIO=0.25     # LFTransMamba (1st NTIRE 2025) default — proven optimal for MLFIM
-LOSS_TYPE=charbonnier  # SOTA: pure pixel loss for max PSNR
+LR=3e-4             # LFTransMamba 1st-place recipe
+MASK_RATIO=0.25     # LFTransMamba default — proven optimal for MLFIM
 NUM_WORKERS=16
 
 # ---- PATHS (adjust for your setup) ----
@@ -45,7 +45,6 @@ info "Model:      $MODEL_NAME"
 info "Epochs:     $EPOCHS"
 info "Batch:      $BATCH"
 info "LR:         $LR"
-info "Loss:       $LOSS_TYPE (pure pixel loss)"
 info "Mask ratio: $MASK_RATIO"
 echo ""
 
@@ -158,7 +157,6 @@ else
         --lr "$LR" \
         --epoch "$EPOCHS" \
         --mlfim_mask_ratio "$MASK_RATIO" \
-        --loss_type "$LOSS_TYPE" \
         --num_workers "$NUM_WORKERS" \
         --path_for_train "$TRAIN_DATA" \
         --path_for_test "$TEST_DATA" \

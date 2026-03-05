@@ -103,40 +103,20 @@ def main(args):
     criterion = MODEL.get_loss(args).to(device)
 
 
-    ''' Optimizer - AdamW (better weight decay) '''
-    optimizer = torch.optim.AdamW(
+    ''' Optimizer - Adam (all LFSR SOTA papers: LFTransMamba, MLFSR, SwinIR, HAT, MambaIR) '''
+    optimizer = torch.optim.Adam(
         [paras for paras in net.parameters() if paras.requires_grad == True],
         lr=args.lr,
-        betas=(0.9, 0.999),
+        betas=(0.9, 0.99),
         eps=1e-08,
-        weight_decay=1e-4  # Reduced from 5e-3: V10 has <1M params, high WD fights learning capacity
     )
     
-    ''' Learning Rate Scheduler - Cosine Annealing with Warmup (SOTA) '''
-    # Calculate total steps for cosine annealing
-    total_epochs = args.epoch
-    warmup_epochs = min(5, total_epochs // 10)  # 5 epochs or 10% warmup
-    
-    # Main scheduler: Cosine Annealing after warmup
-    main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_epochs - warmup_epochs, eta_min=1e-6
-    )
-    
-    # Warmup scheduler: Linear warmup
-    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs
-    )
-    
-    # Combine: Warmup then Cosine
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs]
+    ''' Learning Rate Scheduler - StepLR (LFTransMamba 1st NTIRE 2025: ×0.5 every 25 epochs) '''
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=25, gamma=0.5
     )
     
     # Restore scheduler + optimizer state from checkpoint.
-    # IMPORTANT: Load optimizer LAST due to PyTorch SequentialLR bug #119168 —
-    # SequentialLR.__init__() has undocumented side-effects that corrupt
-    # optimizer state (resets _step_count, modifies initial_lr). Loading
-    # optimizer after scheduler overrides any corruption.
     if _ckpt_ref is not None:
         if 'scheduler' in _ckpt_ref:
             try:
@@ -152,8 +132,9 @@ def main(args):
                 logger.log_string(f'Could not restore optimizer state: {e} — starting fresh.')
         _ckpt_ref = None  # free memory
     
-    # NOTE: Using bfloat16 (not fp16) — more stable for Mamba SSMs on Ampere+
-    # GradScaler is NOT needed for bfloat16 (no loss scaling required)
+    # NOTE: Using full float32 for training. bfloat16 autocast was removed because
+    # 800K params doesn't need mixed precision, and it caused a critical precision
+    # mismatch between training (bfloat16) and validation (float32) → ~20 dB gap.
     
     # NOTE: MLFIM (Masked Light Field Image Modeling) is now handled
     # INSIDE the model's forward() method at the feature level, matching
@@ -261,10 +242,9 @@ def train(train_loader, device, net, criterion, optimizer, args):
         
         optimizer.zero_grad()
         
-        # Mixed Precision Training
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            out = net(data, data_info)
-            loss = criterion(out, label, data_info)
+        # Full float32 — no autocast (bfloat16 was causing train/val precision mismatch)
+        out = net(data, data_info)
+        loss = criterion(out, label, data_info)
 
         if torch.isnan(loss):
             print(f"Error: Loss is NaN at epoch {idx_iter}")
