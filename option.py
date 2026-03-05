@@ -8,7 +8,7 @@ Adapted from the original BasicLFSR option.py with V3-specific fixes:
   - parse_args() → parse_known_args() so train_mlfim_v3.py can add its own
     extra args (--stage, --mlfim_mask_ratio, etc.) without crashing
   - epoch default: 51 → 150 (reasonable for V3 training)
-  - Removed decay_rate, n_steps, gamma (V3 uses cosine+warmup, not StepLR)
+  - Removed decay_rate, n_steps, gamma (V3 uses StepLR ×0.5/25ep, matching LFTransMamba)
 """
 
 import argparse
