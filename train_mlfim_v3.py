@@ -454,7 +454,10 @@ def main():
 
         # Fix #5: Only build state dict on save/val epochs to avoid unnecessary CPU copies
         need_save = (epoch + 1) % 20 == 0
-        need_val = (epoch + 1) % step == 0
+        # Provide early validation at epoch 3 and 5 to verify PSNR fix, 
+        # then validate every 2 epochs
+        idx_e = epoch + 1
+        need_val = (idx_e in [3, 5]) or (idx_e >= 7 and idx_e % 2 == 1) or (idx_e == args.epoch)
         state = None
         if need_save or need_val:
             save_path = str(checkpoints_dir) + (
@@ -476,8 +479,7 @@ def main():
             if need_save:
                 torch.save(state, save_path)
 
-        # Validation every 10 epochs (saves time on 200-epoch runs)
-        if (epoch + 1) % step == 0:
+        if need_val:
             torch.cuda.empty_cache()  # Free training VRAM before validation
             ema.apply_shadow(net)
             net.eval()
