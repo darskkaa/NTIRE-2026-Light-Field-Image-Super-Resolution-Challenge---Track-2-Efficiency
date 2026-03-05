@@ -341,7 +341,14 @@ def main():
 
     # ---- Loss functions ----
     # LFTransMamba ground truth: plain L1Loss for all training.
-    l1_criterion = nn.L1Loss().to(device)
+    # Wrapped to accept optional data_info arg (training loop passes 3 args)
+    class L1WithInfo(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.l1 = nn.L1Loss()
+        def forward(self, pred, target, data_info=None):
+            return self.l1(pred, target)
+    l1_criterion = L1WithInfo().to(device)
     # Charbonnier kept as alternative (not default)
     charb_eps = getattr(args, 'charbonnier_eps', 1e-9)
     class CharbonnierLoss(nn.Module):
