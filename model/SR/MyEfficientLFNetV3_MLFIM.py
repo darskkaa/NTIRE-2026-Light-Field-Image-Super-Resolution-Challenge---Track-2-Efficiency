@@ -725,12 +725,11 @@ class BMDMambaLayer(nn.Module):
         # Reshape to 2D
         out_hw   = y_hw.view(B, C4, H, W)
         out_wh   = y_wh.view(B, C4, W, H).transpose(2, 3).contiguous()  # Fixes B2: W,H -> H,W correctly
-        # V3 NOTE (Bug 1): The flip(-1) on flattened sequences assumes H==W (square patches).
-        # For non-square inputs, flip(-1) reverses the LINEAR index, which doesn't
-        # cleanly reverse row/column order in 2D. Training patches are always square
-        # (128×128 or 160×160) and test patches are 32×32, so this is safe in practice.
-        out_hw_r = y_hw_r.flip(-1).view(B, C4, H, W)
-        out_wh_r = y_wh_r.flip(-1).view(B, C4, W, H).transpose(2, 3).contiguous()
+        # V3 FIX (Bug 1): Reshape to 2D FIRST, then flip both spatial dims.
+        # Previous flip(-1) on flattened (B, C4, H*W) only works when H==W.
+        # This 2D flip is correct for any H×W combination.
+        out_hw_r = y_hw_r.view(B, C4, H, W).flip(2).flip(3)
+        out_wh_r = y_wh_r.view(B, C4, W, H).flip(2).flip(3).transpose(2, 3).contiguous()
 
         # Combine
         combined = torch.cat([out_hw, out_wh, out_hw_r, out_wh_r], dim=1)  # (B, C, H, W)

@@ -444,7 +444,7 @@ def main():
 
         # EMA decay bump in final 25% of training
         if epoch >= int(args.epoch * 0.75):
-            ema.decay = 0.99995
+            ema.decay = 0.9999
 
         loss_train, psnr_train, ssim_train = train_one_epoch(
             train_loader, device, net, criterion, optimizer, args,
