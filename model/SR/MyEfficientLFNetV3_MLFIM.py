@@ -690,11 +690,13 @@ class BMDMambaLayer(nn.Module):
         self.act = nn.SiLU()
 
         # 4 independent SSMs for true directional processing.
-        # CRITICAL: d_conv=1 turns off Mamba's internal 1D Conv!
-        self.mamba_hw   = Mamba(d_model=self.C4, d_state=d_state, d_conv=1, expand=expand)
-        self.mamba_wh   = Mamba(d_model=self.C4, d_state=d_state, d_conv=1, expand=expand)
-        self.mamba_hw_r = Mamba(d_model=self.C4, d_state=d_state, d_conv=1, expand=expand)
-        self.mamba_wh_r = Mamba(d_model=self.C4, d_state=d_state, d_conv=1, expand=expand)
+        # NOTE: We must keep d_conv between 2 and 4 because the causal_conv1d 
+        # CUDA extension hardcodes this constraint. We rely on the external dwconv 
+        # for our true 2D spatial locality prior to this step.
+        self.mamba_hw   = Mamba(d_model=self.C4, d_state=d_state, d_conv=d_conv, expand=expand)
+        self.mamba_wh   = Mamba(d_model=self.C4, d_state=d_state, d_conv=d_conv, expand=expand)
+        self.mamba_hw_r = Mamba(d_model=self.C4, d_state=d_state, d_conv=d_conv, expand=expand)
+        self.mamba_wh_r = Mamba(d_model=self.C4, d_state=d_state, d_conv=d_conv, expand=expand)
 
         self.dir_fusion = nn.Conv2d(channels, channels, 1, bias=False)
         self.out_proj = nn.Conv2d(channels, channels, 1, bias=False)
