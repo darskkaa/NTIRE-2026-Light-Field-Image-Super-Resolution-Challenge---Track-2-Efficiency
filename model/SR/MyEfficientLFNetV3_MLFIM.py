@@ -132,8 +132,8 @@ class get_model(nn.Module):
         # channel split (C4 = channels // 4). 45 % 4 = 1 → last group gets
         # 12 channels but Mamba expects 11 → shape mismatch crash.
         self.channels   = 48      # Wide channels for 4-way BMDMamba split
-        self.n_sa       = 4       # Restored to 4 (trimmed hlfr.refine to compensate FLOPs)
-        self.n_epi      = 3       # Matches LFMamba's 3 EPISSM depth
+        self.n_sa       = 3       # Trimmed from 4 to 3 to afford True 2D Gated Mamba
+        self.n_epi      = 2       # Trimmed from 3 to 2 to afford True 2D Gated Mamba
         self.d_state    = 16
         self.d_conv     = 4
         self.expand     = 2.0     # matching LFMamba's proven value
