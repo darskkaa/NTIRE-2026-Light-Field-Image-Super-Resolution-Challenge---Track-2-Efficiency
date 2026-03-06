@@ -297,7 +297,6 @@ def test(test_loader, device, net, args, save_dir=None):
         for i in range(0, numU * numV, args.minibatch_for_test):
             tmp = subLFin[i:min(i + args.minibatch_for_test, numU * numV), :, :, :]
             with torch.no_grad():
-                torch.cuda.empty_cache()
                 out = net(tmp.to(device), data_info)
                 subLFout[i:min(i + args.minibatch_for_test, numU * numV), :, :, :] = out.cpu()
         subLFout = rearrange(subLFout, '(n1 n2) 1 a1h a2w -> n1 n2 a1h a2w', n1=numU, n2=numV)

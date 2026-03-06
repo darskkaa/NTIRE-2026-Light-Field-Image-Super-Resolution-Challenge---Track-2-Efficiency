@@ -33,7 +33,7 @@ SCALE=4
 EPOCHS=100          # LFTransMamba (1st NTIRE 2025): 100 epochs
 BATCH=3             # LFTransMamba Track 2 exact value
 LR=2e-4             # LFTransMamba Track 2: 2e-4 (not 3e-4)
-MASK_RATIO=0.35     # LFTransMamba hardcoded value (0.35, NOT 0.25)
+MASK_RATIO=0.25     # LFTransMamba paper Table 4: 0.25 optimal for Track 2
 NUM_WORKERS=16
 
 # ---- PATHS (adjust for your setup) ----

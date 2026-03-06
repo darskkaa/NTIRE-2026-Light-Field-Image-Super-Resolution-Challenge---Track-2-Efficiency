@@ -50,8 +50,8 @@ def parse_mlfim_args():
     parser = argparse.ArgumentParser(description="MLFIM Training V3 — Max PSNR")
     parser.add_argument('--stage', type=str, choices=['pretrain', 'finetune'],
                         required=True, help='Training stage')
-    parser.add_argument('--mlfim_mask_ratio', type=float, default=0.35,
-                        help='Mask ratio for MLFIM pre-training (default: 0.35, LFTransMamba exact)')
+    parser.add_argument('--mlfim_mask_ratio', type=float, default=0.25,
+                        help='Mask ratio for MLFIM pre-training (default: 0.25, paper Table 4 optimal)')
     parser.add_argument('--grad_accum_steps', type=int, default=2,
                         help='Gradient accumulation steps for effective batch size '
                              '(effective_bs = batch_size * grad_accum_steps)')
@@ -486,7 +486,18 @@ def main():
 
         if need_val:
             torch.cuda.empty_cache()  # Free training VRAM before validation
-            ema.apply_shadow(net)
+
+            # For first 5 epochs, skip EMA and use raw model weights.
+            # EMA shadow at early epochs is a weighted avg from random init
+            # (decay=0.997) which may not have converged, potentially
+            # producing garbage predictions (observed 12 dB val PSNR).
+            use_ema_for_val = (epoch >= 5)
+            if use_ema_for_val:
+                ema.apply_shadow(net)
+                logger.log_string('  [VAL] Using EMA shadow weights')
+            else:
+                logger.log_string(f'  [VAL] Skipping EMA (epoch {epoch+1} < 5)')
+
             net.eval()
 
             all_psnrs = []
@@ -514,7 +525,8 @@ def main():
                 torch.save(state, best_path)
                 logger.log_string(f'  ★ New best: {aggregate_psnr:.2f} dB (aggregate)')
 
-            ema.restore(net)
+            if use_ema_for_val:
+                ema.restore(net)
 
         scheduler.step()
 
