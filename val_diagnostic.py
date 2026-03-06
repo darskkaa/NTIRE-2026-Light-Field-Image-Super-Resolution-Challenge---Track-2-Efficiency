@@ -14,7 +14,6 @@ warnings.filterwarnings("ignore")
 # Import the model and the interpolation function
 try:
     from model.SR.MyEfficientLFNetV3_MLFIM import get_model, LF_interpolate
-    from utils.utils import shave
 except ImportError as e:
     print(f"FAILED TO IMPORT: {e}. Make sure you run this from the project root!")
     sys.exit(1)
