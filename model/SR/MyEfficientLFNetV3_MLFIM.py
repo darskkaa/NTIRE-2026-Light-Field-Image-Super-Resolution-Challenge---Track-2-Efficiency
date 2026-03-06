@@ -317,10 +317,10 @@ class get_model(nn.Module):
         assert out.shape == sr_y.shape, (
             f"Shape mismatch: {out.shape} vs {sr_y.shape}"
         )
-        # Clamp to [0,1] — prevents destructive overshooting at early epochs.
-        # Without this, the reconstruction residual can produce values far
-        # outside [0,1] which makes val PSNR < bicubic (~12 dB vs ~25 dB).
-        return (out + sr_y).clamp(0.0, 1.0)
+        # (Removed the explicit clamp(0,1) hack here — the 12 dB PSNR "overshooting"
+        # was actually a 48-pixel structural shift defect in LFintegrate_gaussian,
+        # which has now been fixed. Clamping here destroys gradients for outliers.)
+        return out + sr_y
 
     # -------------------------------------------------------------- helpers
     def random_masking(self, x, mask_ratio):

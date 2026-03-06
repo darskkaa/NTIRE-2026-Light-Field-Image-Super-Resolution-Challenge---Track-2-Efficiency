@@ -460,9 +460,9 @@ def main():
 
         # Fix #5: Only build state dict on save/val epochs to avoid unnecessary CPU copies
         need_save = (epoch + 1) % 20 == 0
-        # Validate every 5 epochs + final epoch, plus epoch 3 for quick debug
+        # Validate every 5 epochs + final epoch, plus epochs 1 and 3 for quick debug
         idx_e = epoch + 1
-        need_val = (idx_e == 3) or (idx_e % 5 == 0) or (idx_e == args.epoch)
+        need_val = (idx_e == 1) or (idx_e == 3) or (idx_e % 5 == 0) or (idx_e == args.epoch)
         state = None
         if need_save or need_val:
             save_path = str(checkpoints_dir) + (

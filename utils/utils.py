@@ -261,8 +261,18 @@ def LFintegrate_gaussian(subLF, angRes, pz, stride, h, w):
     weight_map = weight_map.clamp(min=1e-8)
     outLF = outLF / weight_map
 
-    # Crop to target size
-    outLF = outLF[:, :, 0:h, 0:w]
+    # Crop to target size, EXCLUDING the padded border!
+    # LFdivide added `bdr` padding to the top/left of the LR image.
+    # In HR space, this is `bdr * scale` padding at the top/left.
+    # We must start cropping AFTER this padding!
+    lr_pz = pz // (h // subLF.shape[2]) # Infer scale factor (target h is per-view, but wait, scale isn't passed)
+    # Actually, a better way is to deduce bdr from the overlap:
+    # We know pz = lr_pz * scale, stride = lr_stride * scale.
+    # The padding added in LR space was `bdr_lr = (lr_pz - lr_stride) // 2`.
+    # In HR space, `bdr_hr = (pz - stride) // 2`.
+    bdr_hr = (pz - stride) // 2
+    
+    outLF = outLF[:, :, bdr_hr : bdr_hr + h, bdr_hr : bdr_hr + w]
 
     return outLF
 
