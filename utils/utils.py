@@ -183,10 +183,14 @@ def LFdivide(data, angRes, patch_size, stride):
     [_, _, h0, w0] = data.size()
 
     bdr = (patch_size - stride) // 2
-    numU = (h0 + bdr * 2 - 1) // stride
-    numV = (w0 + bdr * 2 - 1) // stride
     data_pad = ImageExtend(data, [bdr, bdr+stride-1, bdr, bdr+stride-1])
     subLF = F.unfold(data_pad, kernel_size=patch_size, stride=stride)
+    # V3 FIX: Compute numU/numV from the actual padded dimensions instead of
+    # the old formula `(h0 + bdr*2 - 1) // stride` which is wrong when
+    # stride != patch_size/2 (e.g., stride=8, patch_size=32).
+    h_pad, w_pad = data_pad.shape[2], data_pad.shape[3]
+    numU = (h_pad - patch_size) // stride + 1
+    numV = (w_pad - patch_size) // stride + 1
     subLF = rearrange(subLF, '(a1 a2) (h w) (n1 n2) -> n1 n2 (a1 h) (a2 w)',
                       a1=angRes, a2=angRes, h=patch_size, w=patch_size, n1=numU, n2=numV)
 
