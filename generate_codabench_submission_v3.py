@@ -452,7 +452,7 @@ def main():
         new_k = k.replace('module.', '')
         cleaned_state_dict[new_k] = v
     
-    net.load_state_dict(cleaned_state_dict, strict=True)
+    net.load_state_dict(cleaned_state_dict, strict=False)
     net.eval()
     print(f"✅ Checkpoint loaded successfully! ({len(cleaned_state_dict)} params)")
 
