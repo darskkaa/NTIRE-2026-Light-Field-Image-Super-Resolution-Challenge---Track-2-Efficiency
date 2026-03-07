@@ -490,7 +490,13 @@ def main():
         for root, dirs, files in os.walk(out_base):
             for file in files:
                 file_path = os.path.join(root, file)
+                # Ensure the path inside the zip starts with Real/ or Synth/ directly
+                # e.g., if file_path is submission_v3/Real/EPFL/View_0_0.bmp
+                # relpath will be Real/EPFL/View_0_0.bmp
                 arcname = os.path.relpath(file_path, out_base)
+                # Extra safety check to prevent any accidental root wrapping
+                if arcname.startswith("submission_v3"):
+                    arcname = arcname.replace("submission_v3" + os.sep, "", 1)
                 zipf.write(file_path, arcname)
                 total_files += 1
 
