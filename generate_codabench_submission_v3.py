@@ -206,8 +206,16 @@ def process_file_direct(mat_file_path, save_dir, net, device, args):
     Sr_SAI_rgb = (ycbcr2rgb(Sr_SAI_ycbcr.squeeze().permute(1, 2, 0).numpy()).clip(0, 1) * 255).astype('uint8')
     Sr_4D_rgb = rearrange(Sr_SAI_rgb, '(a1 h) (a2 w) c -> a1 a2 h w c', a1=args.angRes_out, a2=args.angRes_out)
 
-    # Save format required for CodaBench (a .mat file with a single "LF" variable)
-    scio.savemat(os.path.join(save_dir, filename), {'LF': Sr_4D_rgb})
+    # Save format required for CodaBench (.bmp per view)
+    import imageio
+    scene_dir = os.path.join(save_dir, filename.replace('.mat', '').replace('.h5', ''))
+    os.makedirs(scene_dir, exist_ok=True)
+    
+    for i in range(args.angRes_out):
+        for j in range(args.angRes_out):
+            img = Sr_4D_rgb[i, j, :, :, :]
+            path = os.path.join(scene_dir, f'View_{i}_{j}.bmp')
+            imageio.imwrite(path, img)
 
 
 # ==============================================================================
