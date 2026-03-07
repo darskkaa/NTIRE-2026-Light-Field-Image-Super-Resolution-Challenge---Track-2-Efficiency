@@ -119,17 +119,43 @@ def LFdivide(data, angRes, patch_size, stride):
 
     return subLF
 
-def LFintegrate(subLF, angRes, pz, stride, h, w):
+def LFintegrate_gaussian(subLF, angRes, pz, stride, h, w):
     if subLF.dim() == 4:
-        subLF = rearrange(subLF, 'n1 n2 (a1 h) (a2 w) -> n1 n2 a1 a2 h w', a1=angRes, a2=angRes)
-        pass
-    bdr = (pz - stride) // 2
-    outLF = subLF[:, :, :, :, bdr:bdr+stride, bdr:bdr+stride]
-    outLF = rearrange(outLF, 'n1 n2 a1 a2 h w -> a1 a2 (n1 h) (n2 w)')
-    outLF = outLF[:, :, 0:h, 0:w]
+        subLF = rearrange(subLF, 'n1 n2 (a1 h) (a2 w) -> n1 n2 a1 a2 h w',
+                          a1=angRes, a2=angRes)
+
+    n1, n2, a1, a2, pH, pW = subLF.shape
+
+    # Build 2D Gaussian weight map for one patch
+    sigma = pz / 4.0
+    ax = torch.arange(pz, dtype=torch.float32, device=subLF.device) - (pz - 1) / 2.0
+    gauss_1d = torch.exp(-0.5 * (ax / sigma) ** 2)
+    gauss_2d = gauss_1d.unsqueeze(1) * gauss_1d.unsqueeze(0)  # (pz, pz)
+    gauss_2d = gauss_2d / gauss_2d.max()  # normalize peak to 1.0
+
+    # Accumulate weighted patches into output canvas
+    canvas_h = (n1 - 1) * stride + pz
+    canvas_w = (n2 - 1) * stride + pz
+
+    outLF = torch.zeros(a1, a2, canvas_h, canvas_w, dtype=subLF.dtype, device=subLF.device)
+    weight_map = torch.zeros(1, 1, canvas_h, canvas_w, dtype=subLF.dtype, device=subLF.device)
+
+    for i in range(n1):
+        for j in range(n2):
+            top = i * stride
+            left = j * stride
+            outLF[:, :, top:top+pz, left:left+pz] += subLF[i, j] * gauss_2d
+            weight_map[:, :, top:top+pz, left:left+pz] += gauss_2d
+
+    # Normalize by accumulated weights
+    weight_map = weight_map.clamp(min=1e-8)
+    outLF = outLF / weight_map
+
+    # Crop to target size, EXCLUDING the padded border!
+    bdr_hr = (pz - stride) // 2
+    outLF = outLF[:, :, bdr_hr : bdr_hr + h, bdr_hr : bdr_hr + w]
 
     return outLF
-
 
 # ==============================================================================
 # Model Inference 
@@ -196,9 +222,9 @@ def process_file_direct(mat_file_path, save_dir, net, device, args):
 
     subLFout = rearrange(subLFout, '(n1 n2) 1 a1h a2w -> n1 n2 a1h a2w', n1=numU, n2=numV)
 
-    # Restore Patches to LFs
-    Sr_4D_y = LFintegrate(subLFout, args.angRes_out, args.patch_size_for_test * args.scale_factor,
-                          args.stride_for_test * args.scale_factor, H, W)
+    # Restore Patches to LFs using Gaussian Blending for Max PSNR
+    Sr_4D_y = LFintegrate_gaussian(subLFout, args.angRes_out, args.patch_size_for_test * args.scale_factor,
+                                   args.stride_for_test * args.scale_factor, H * scale_factor, W * scale_factor)
     Sr_SAI_y = rearrange(Sr_4D_y, 'a1 a2 h w -> 1 1 (a1 h) (a2 w)')
     
     # Recombine Y with CbCr and convert to RGB
