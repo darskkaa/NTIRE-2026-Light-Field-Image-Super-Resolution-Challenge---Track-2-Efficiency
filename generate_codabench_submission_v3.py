@@ -458,7 +458,7 @@ def main():
 
     # Step 3: Run Inference
     print("\n=== STEP 3: Running Inference & Generating .bmp files ===")
-    out_base = "submission_v3"
+    out_base = "submission_temp"
     shutil.rmtree(out_base, ignore_errors=True)
     os.makedirs(f"{out_base}/Real", exist_ok=True)
     os.makedirs(f"{out_base}/Synth", exist_ok=True)
@@ -480,8 +480,8 @@ def main():
         process_file_direct(f, f"{out_base}/Synth", net, device, config)
 
     # Step 4: Zip Submission
-    print("\n=== STEP 4: Creating submission_v3.zip ===")
-    zip_path = "submission_v3.zip"
+    print("\n=== STEP 4: Creating submission.zip ===")
+    zip_path = "submission.zip"
     if os.path.exists(zip_path):
         os.remove(zip_path)
         
@@ -490,13 +490,17 @@ def main():
         for root, dirs, files in os.walk(out_base):
             for file in files:
                 file_path = os.path.join(root, file)
-                # Ensure the path inside the zip starts with Real/ or Synth/ directly
-                # e.g., if file_path is submission_v3/Real/EPFL/View_0_0.bmp
-                # relpath will be Real/EPFL/View_0_0.bmp
+                
+                # We want the zip to contain ONLY `Real/...` and `Synth/...` at the root.
+                # `out_base` is "submission_temp", so we strip it.
+                # relpath("submission_temp/Real/EPFL/View_0_0.bmp", "submission_temp")
+                # -> "Real/EPFL/View_0_0.bmp"
                 arcname = os.path.relpath(file_path, out_base)
-                # Extra safety check to prevent any accidental root wrapping
-                if arcname.startswith("submission_v3"):
-                    arcname = arcname.replace("submission_v3" + os.sep, "", 1)
+                
+                # To be absolutely sure, if there's any stray slash at the start, remove it
+                if arcname.startswith('/') or arcname.startswith('\\'):
+                    arcname = arcname[1:]
+                
                 zipf.write(file_path, arcname)
                 total_files += 1
 
