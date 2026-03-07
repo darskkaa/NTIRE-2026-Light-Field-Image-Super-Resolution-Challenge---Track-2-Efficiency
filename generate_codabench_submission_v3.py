@@ -491,32 +491,81 @@ def main():
             for file in files:
                 file_path = os.path.join(root, file)
                 
-                # We want the zip to contain ONLY `Real/...` and `Synth/...` at the root.
-                # `out_base` is "submission_temp", so we strip it.
+                # Strip the temp directory prefix
                 rel_path = os.path.relpath(file_path, out_base)
                 
-                if rel_path.startswith('/') or rel_path.startswith('\\'):
-                    rel_path = rel_path[1:]
+                # CRITICAL: Always use forward slashes (POSIX) in zip arcnames.
+                # CodaBench's evaluation script checks f.startswith('Real/')
+                # with forward slash. Windows os.path.relpath uses backslashes.
+                arcname = rel_path.replace('\\', '/')
                 
-                arcname = rel_path
+                # Strip any leading slash
+                if arcname.startswith('/'):
+                    arcname = arcname[1:]
                 
                 zipf.write(file_path, arcname)
                 total_files += 1
 
-    # Verify
-    real_scenes = len(os.listdir(f"{out_base}/Real")) if os.path.exists(f"{out_base}/Real") else 0
-    synth_scenes = len(os.listdir(f"{out_base}/Synth")) if os.path.exists(f"{out_base}/Synth") else 0
-    print(f"\n📊 Summary:")
-    print(f"   Real scenes:  {real_scenes}")
-    print(f"   Synth scenes: {synth_scenes}")
-    print(f"   Total BMP files in zip: {total_files}")
-    print(f"   Expected: {(real_scenes + synth_scenes) * 25} ({real_scenes + synth_scenes} scenes × 25 views)")
-    
-    if total_files == (real_scenes + synth_scenes) * 25:
-        print(f"\n✅ Submission successfully created: {zip_path}")
-        print("   You can now upload this file to CodaBench.")
-    else:
-        print(f"\n⚠️  Warning: File count mismatch! Expected {(real_scenes + synth_scenes) * 25}, got {total_files}")
+    # Step 5: Self-Validation
+    print("\n=== STEP 5: Self-Validating submission.zip ===")
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        all_entries = zf.namelist()
+        
+        # Check structure
+        has_real = any(f.startswith('Real/') for f in all_entries)
+        has_synth = any(f.startswith('Synth/') for f in all_entries)
+        
+        real_scenes = set()
+        synth_scenes = set()
+        bmp_count = 0
+        for f in all_entries:
+            parts = f.split('/')
+            if len(parts) >= 3 and parts[-1].endswith('.bmp'):
+                bmp_count += 1
+                if parts[0] == 'Real':
+                    real_scenes.add(parts[1])
+                elif parts[0] == 'Synth':
+                    synth_scenes.add(parts[1])
+        
+        print(f"\n📊 Zip Contents Validation:")
+        print(f"   Has Real/ folder: {has_real}")
+        print(f"   Has Synth/ folder: {has_synth}")
+        print(f"   Real scenes ({len(real_scenes)}): {sorted(real_scenes)}")
+        print(f"   Synth scenes ({len(synth_scenes)}): {sorted(synth_scenes)}")
+        print(f"   Total BMP files: {bmp_count}")
+        print(f"   Expected: {(len(real_scenes) + len(synth_scenes)) * 25} ({len(real_scenes) + len(synth_scenes)} scenes × 25 views)")
+        
+        # Show first 10 entries for debugging
+        print(f"\n   First 10 zip entries (verify no backslashes or extra nesting):")
+        for entry in sorted(all_entries)[:10]:
+            print(f"     {entry}")
+        
+        # Final verdict
+        errors = []
+        if not has_real:
+            errors.append("Missing 'Real/' folder at zip root")
+        if not has_synth:
+            errors.append("Missing 'Synth/' folder at zip root")
+        if bmp_count != (len(real_scenes) + len(synth_scenes)) * 25:
+            errors.append(f"BMP count mismatch: got {bmp_count}, expected {(len(real_scenes) + len(synth_scenes)) * 25}")
+        
+        # Check for view naming
+        expected_views = {f"View_{i}_{j}.bmp" for i in range(5) for j in range(5)}
+        for scene_type, scenes in [("Real", real_scenes), ("Synth", synth_scenes)]:
+            for scene in scenes:
+                prefix = f"{scene_type}/{scene}/"
+                scene_files = {f.split('/')[-1] for f in all_entries if f.startswith(prefix) and f.endswith('.bmp')}
+                missing = expected_views - scene_files
+                if missing:
+                    errors.append(f"{scene_type}/{scene} missing views: {missing}")
+        
+        if errors:
+            print(f"\n❌ VALIDATION FAILED:")
+            for e in errors:
+                print(f"   • {e}")
+        else:
+            print(f"\n✅ VALIDATION PASSED — submission.zip is ready for CodaBench upload!")
 
 if __name__ == "__main__":
     main()
+
