@@ -59,23 +59,25 @@ def download_test_data():
     real_dir = "datasets_test/NTIRE_Test_Real"
     synth_dir = "datasets_test/NTIRE_Test_Synth"
     
-    if not os.path.exists(real_dir) or len(glob.glob(f'{real_dir}/inference/*.mat')) < 16:
+    if not os.path.exists(real_dir) or len(glob.glob(f'{real_dir}/**/*.mat', recursive=True)) < 16:
         print(f"Downloading Test Real to {real_dir}...")
         os.makedirs(real_dir, exist_ok=True)
         folder_id = TEST_REAL_LINK.split('/')[-1].split('?')[0]
         run_cmd(f'gdown --folder {folder_id} -O "{real_dir}"', check=False)
         
-    if not os.path.exists(synth_dir) or len(glob.glob(f'{synth_dir}/inference/*.mat')) < 16:
+    if not os.path.exists(synth_dir) or len(glob.glob(f'{synth_dir}/**/*.mat', recursive=True)) < 16:
         print(f"Downloading Test Synth to {synth_dir}...")
         os.makedirs(synth_dir, exist_ok=True)
         folder_id = TEST_SYNTH_LINK.split('/')[-1].split('?')[0]
         run_cmd(f'gdown --folder {folder_id} -O "{synth_dir}"', check=False)
 
-    real_count = len(glob.glob(f'{real_dir}/inference/*.mat'))
-    synth_count = len(glob.glob(f'{synth_dir}/inference/*.mat'))
+    real_count = len(glob.glob(f'{real_dir}/**/*.mat', recursive=True))
+    synth_count = len(glob.glob(f'{synth_dir}/**/*.mat', recursive=True))
     print(f"[INFO] Found: {real_count} Real .mat, {synth_count} Synth .mat")
     if real_count == 0 and synth_count == 0:
-        print("❌ No test data found! Check your Google Drive links or download manually.")
+        print("\n❌ No test data found! gdown failed (likely due to Google Drive rate limits).")
+        print("Please download the test data manually via your browser, upload to your VM, and run:")
+        print("  python generate_codabench_submission_v3.py --real_dir /path/to/Real/inference --synth_dir /path/to/Synth/inference\n")
         sys.exit(1)
 
 # ==============================================================================
@@ -388,8 +390,8 @@ def main():
     if args.real_dir is None or args.synth_dir is None:
         download_test_data()
     
-    real_dir = args.real_dir or "datasets_test/NTIRE_Test_Real/inference"
-    synth_dir = args.synth_dir or "datasets_test/NTIRE_Test_Synth/inference"
+    real_dir = args.real_dir or "datasets_test/NTIRE_Test_Real"
+    synth_dir = args.synth_dir or "datasets_test/NTIRE_Test_Synth"
 
     # Step 2: Model & Args Definition
     class Config:
@@ -461,8 +463,8 @@ def main():
     os.makedirs(f"{out_base}/Real", exist_ok=True)
     os.makedirs(f"{out_base}/Synth", exist_ok=True)
 
-    real_files = sorted(glob.glob(f"{real_dir}/*.mat"))
-    synth_files = sorted(glob.glob(f"{synth_dir}/*.mat"))
+    real_files = sorted(glob.glob(f"{real_dir}/**/*.mat", recursive=True))
+    synth_files = sorted(glob.glob(f"{synth_dir}/**/*.mat", recursive=True))
 
     print(f"Found {len(real_files)} Real + {len(synth_files)} Synth .mat files")
     if len(real_files) == 0 and len(synth_files) == 0:
