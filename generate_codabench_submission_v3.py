@@ -491,16 +491,14 @@ def main():
             for file in files:
                 file_path = os.path.join(root, file)
                 
-                # The user clarified that CodaBench v1.23 EXPECTS a root folder.
-                # When unzipped, it should create a single 'submission/' folder
-                # containing 'Real/' and 'Synth/'.
+                # We want the zip to contain ONLY `Real/...` and `Synth/...` at the root.
+                # `out_base` is "submission_temp", so we strip it.
                 rel_path = os.path.relpath(file_path, out_base)
                 
                 if rel_path.startswith('/') or rel_path.startswith('\\'):
                     rel_path = rel_path[1:]
                 
-                # Prepend the root directory name
-                arcname = os.path.join("submission", rel_path)
+                arcname = rel_path
                 
                 zipf.write(file_path, arcname)
                 total_files += 1
