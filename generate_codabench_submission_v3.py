@@ -491,15 +491,16 @@ def main():
             for file in files:
                 file_path = os.path.join(root, file)
                 
-                # We want the zip to contain ONLY `Real/...` and `Synth/...` at the root.
-                # `out_base` is "submission_temp", so we strip it.
-                # relpath("submission_temp/Real/EPFL/View_0_0.bmp", "submission_temp")
-                # -> "Real/EPFL/View_0_0.bmp"
-                arcname = os.path.relpath(file_path, out_base)
+                # The user clarified that CodaBench v1.23 EXPECTS a root folder.
+                # When unzipped, it should create a single 'submission/' folder
+                # containing 'Real/' and 'Synth/'.
+                rel_path = os.path.relpath(file_path, out_base)
                 
-                # To be absolutely sure, if there's any stray slash at the start, remove it
-                if arcname.startswith('/') or arcname.startswith('\\'):
-                    arcname = arcname[1:]
+                if rel_path.startswith('/') or rel_path.startswith('\\'):
+                    rel_path = rel_path[1:]
+                
+                # Prepend the root directory name
+                arcname = os.path.join("submission", rel_path)
                 
                 zipf.write(file_path, arcname)
                 total_files += 1
