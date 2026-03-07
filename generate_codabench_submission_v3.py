@@ -471,13 +471,37 @@ def main():
         print("❌ No .mat files found! Check your data paths.")
         sys.exit(1)
 
+    failed_scenes = []
+
     print(f"\nProcessing {len(real_files)} Real scenes...")
     for f in tqdm(real_files, ncols=70):
-        process_file_direct(f, f"{out_base}/Real", net, device, config)
+        try:
+            process_file_direct(f, f"{out_base}/Real", net, device, config)
+            torch.cuda.empty_cache()
+        except Exception as e:
+            scene_name = Path(f).stem
+            print(f"\n❌ FAILED on Real/{scene_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            failed_scenes.append(f"Real/{scene_name}")
 
     print(f"\nProcessing {len(synth_files)} Synth scenes...")
     for f in tqdm(synth_files, ncols=70):
-        process_file_direct(f, f"{out_base}/Synth", net, device, config)
+        try:
+            process_file_direct(f, f"{out_base}/Synth", net, device, config)
+            torch.cuda.empty_cache()
+        except Exception as e:
+            scene_name = Path(f).stem
+            print(f"\n❌ FAILED on Synth/{scene_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            failed_scenes.append(f"Synth/{scene_name}")
+
+    if failed_scenes:
+        print(f"\n⚠️  WARNING: {len(failed_scenes)} scenes FAILED:")
+        for s in failed_scenes:
+            print(f"   • {s}")
+        print("   The submission will be INCOMPLETE and CodaBench will reject it!")
 
     # Step 4: Zip Submission
     print("\n=== STEP 4: Creating submission.zip ===")
