@@ -42,8 +42,24 @@ from math import ceil
 # 0. Set up dependencies and paths
 # ==============================================================================
 
-TEST_REAL_LINK = "https://drive.google.com/drive/folders/1rjPxwBjdg8JeGnMHacDsVwDbc2PiFqhF?usp=drive_link"
-TEST_SYNTH_LINK = "https://drive.google.com/drive/folders/1eHiYKJ72R2_6Ci6I0QQ0UW2pjblGNvVy?usp=drive_link"
+TEST_REAL_LINK = "https://drive.google.com/drive/folders/1FxWmbrbH2mYQgApjOmj-2UM1Yu7fQ1Rg"
+TEST_SYNTH_LINK = "https://drive.google.com/drive/folders/120fxXLA20jI7tWrZ-YGn14e4B41cIPq7"
+
+# All 32 expected test scene filenames (known from the official test data)
+EXPECTED_REAL_FILES = [
+    "IMG_0199__Decoded.mat", "IMG_0214__Decoded.mat", "IMG_0238__Decoded.mat",
+    "IMG_0256__Decoded.mat", "IMG_0262__Decoded.mat", "IMG_0268__Decoded.mat",
+    "IMG_0271__Decoded.mat", "IMG_0280__Decoded.mat", "IMG_0289__Decoded.mat",
+    "IMG_0308__Decoded.mat", "IMG_0329__Decoded.mat", "IMG_0363__Decoded.mat",
+    "IMG_0371__Decoded.mat", "IMG_0389__Decoded.mat", "IMG_0394__Decoded.mat",
+    "IMG_0404__Decoded.mat",
+]
+EXPECTED_SYNTH_FILES = [
+    "aquarium.mat", "bookcase.mat", "camellia.mat", "cat 2.mat", "cat.mat",
+    "courtyard.mat", "dining table.mat", "headboard.mat", "ivy.mat",
+    "obius cube.mat", "pinetree.mat", "plants.mat", "shelf.mat",
+    "ship model.mat", "stationery.mat", "washer.mat",
+]
 
 def run_cmd(cmd, check=True):
     print(f"\n[EXEC] {cmd}")
@@ -52,33 +68,61 @@ def run_cmd(cmd, check=True):
         print(f"❌ Command failed with return code {result.returncode}: {cmd}")
         sys.exit(result.returncode)
 
-def download_test_data():
+def verify_all_files(base_dir, expected_files, label):
+    """Check that every expected .mat file exists somewhere under base_dir."""
+    # Find all .mat files recursively
+    found_files = {os.path.basename(f) for f in glob.glob(f'{base_dir}/**/*.mat', recursive=True)}
+    missing = [f for f in expected_files if f not in found_files]
+    if missing:
+        print(f"\n❌ MISSING {len(missing)} {label} files:")
+        for m in missing:
+            print(f"   • {m}")
+        return False
+    else:
+        print(f"   ✅ All {len(expected_files)} {label} .mat files verified present")
+        return True
+
+def download_test_data(force=False):
     print("\n=== STEP 1: Checking/Downloading NTIRE Test Data ===")
     os.makedirs('datasets_test', exist_ok=True)
     
     real_dir = "datasets_test/NTIRE_Test_Real"
     synth_dir = "datasets_test/NTIRE_Test_Synth"
     
-    if not os.path.exists(real_dir) or len(glob.glob(f'{real_dir}/**/*.mat', recursive=True)) < 16:
+    # Download Real test data
+    real_ok = os.path.exists(real_dir) and len(glob.glob(f'{real_dir}/**/*.mat', recursive=True)) >= 16
+    if force or not real_ok:
         print(f"Downloading Test Real to {real_dir}...")
+        if force and os.path.exists(real_dir):
+            shutil.rmtree(real_dir)
         os.makedirs(real_dir, exist_ok=True)
         folder_id = TEST_REAL_LINK.split('/')[-1].split('?')[0]
         run_cmd(f'gdown --folder {folder_id} -O "{real_dir}"', check=False)
-        
-    if not os.path.exists(synth_dir) or len(glob.glob(f'{synth_dir}/**/*.mat', recursive=True)) < 16:
+    
+    # Download Synth test data
+    synth_ok = os.path.exists(synth_dir) and len(glob.glob(f'{synth_dir}/**/*.mat', recursive=True)) >= 16
+    if force or not synth_ok:
         print(f"Downloading Test Synth to {synth_dir}...")
+        if force and os.path.exists(synth_dir):
+            shutil.rmtree(synth_dir)
         os.makedirs(synth_dir, exist_ok=True)
         folder_id = TEST_SYNTH_LINK.split('/')[-1].split('?')[0]
         run_cmd(f'gdown --folder {folder_id} -O "{synth_dir}"', check=False)
 
+    # Verify ALL expected files are present
     real_count = len(glob.glob(f'{real_dir}/**/*.mat', recursive=True))
     synth_count = len(glob.glob(f'{synth_dir}/**/*.mat', recursive=True))
-    print(f"[INFO] Found: {real_count} Real .mat, {synth_count} Synth .mat")
-    if real_count == 0 and synth_count == 0:
-        print("\n❌ No test data found! gdown failed (likely due to Google Drive rate limits).")
-        print("Please download the test data manually via your browser, upload to your VM, and run:")
-        print("  python generate_codabench_submission_v3.py --real_dir /path/to/Real/inference --synth_dir /path/to/Synth/inference\n")
+    print(f"\n[INFO] Found: {real_count} Real .mat, {synth_count} Synth .mat")
+    
+    real_verified = verify_all_files(real_dir, EXPECTED_REAL_FILES, "Real")
+    synth_verified = verify_all_files(synth_dir, EXPECTED_SYNTH_FILES, "Synth")
+    
+    if not real_verified or not synth_verified:
+        print("\n❌ Some test files are MISSING! gdown may have failed (Google Drive rate limits).")
+        print("Please download manually via your browser, upload to VM, and run:")
+        print("  python generate_codabench_submission_v3.py --real_dir /path/to/Real/mat/files --synth_dir /path/to/Synth/mat/files")
         sys.exit(1)
+
 
 # ==============================================================================
 # MATLAB-compatible bicubic resize (matches colab_submission.py / BasicLFSR)
@@ -384,11 +428,13 @@ def main():
                         help="Path to Real test .mat files (overrides download)")
     parser.add_argument("--synth_dir", type=str, default=None,
                         help="Path to Synth test .mat files (overrides download)")
+    parser.add_argument("--force-download", action="store_true",
+                        help="Force re-download of test data even if files exist")
     args = parser.parse_args()
 
     # Step 1: Download or locate test data
     if args.real_dir is None or args.synth_dir is None:
-        download_test_data()
+        download_test_data(force=args.force_download)
     
     real_dir = args.real_dir or "datasets_test/NTIRE_Test_Real"
     synth_dir = args.synth_dir or "datasets_test/NTIRE_Test_Synth"
