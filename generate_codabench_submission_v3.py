@@ -406,6 +406,38 @@ def process_file_direct(mat_file_path, save_dir, net, device, args):
 
     # 8. Save BMP per view (matches train.py test() and colab_submission.py format)
     scene_name = filename.replace('.mat', '').replace('.h5', '')
+    
+    # -------------------------------------------------------------
+    # OPTIONAL MAPPING FOR CODABENCH VALIDATION NAMES
+    # -------------------------------------------------------------
+    if getattr(args, 'use_validation_names', False):
+        CODABENCH_REAL = ['0725', '1518', '1546', 'Bikes', 'Hublais', 'IMG_3854', 'IMG_3869', 'IMG_4028', 'IMG_4061', 'IMG_4085', 'IMG_4162', 'IMG_5160', 'Image245', 'Image427', 'Image435', 'Palais']
+        CODABENCH_SYNTH = [f'{i:02d}' for i in range(1, 17)]
+        
+        # We sort alphabetically since they usually align the test files natively
+        # Real
+        if 'Real' in str(save_dir) or 'Real' in mat_file_path:
+            # We assume the user has 16 real test files downloaded. We must find its index.
+            # To be perfectly safe, we'll map them alphabetically.
+            import glob
+            parent_dir = os.path.dirname(mat_file_path)
+            all_mats = sorted([os.path.basename(p) for p in glob.glob(os.path.join(parent_dir, '*.mat'))])
+            try:
+                idx = all_mats.index(filename)
+                scene_name = sorted(CODABENCH_REAL)[idx]
+            except:
+                pass
+        # Synth
+        elif 'Synth' in str(save_dir) or 'Synth' in mat_file_path:
+            import glob
+            parent_dir = os.path.dirname(mat_file_path)
+            all_mats = sorted([os.path.basename(p) for p in glob.glob(os.path.join(parent_dir, '*.mat'))])
+            try:
+                idx = all_mats.index(filename)
+                scene_name = sorted(CODABENCH_SYNTH)[idx]
+            except:
+                pass
+
     scene_dir = os.path.join(save_dir, scene_name)
     os.makedirs(scene_dir, exist_ok=True)
     
@@ -430,7 +462,10 @@ def main():
                         help="Path to Synth test .mat files (overrides download)")
     parser.add_argument("--force-download", action="store_true",
                         help="Force re-download of test data even if files exist")
-    args = parser.parse_args()
+    parser.add_argument("--use_validation_names", action="store_true",
+                        help="Map input test names to CodaBench validation IDs (01-16, 0725-1546)")
+    # Use parse_known_args instead of parse_args to ignore Jupyter notebook `-f` flags
+    args, _ = parser.parse_known_args()
 
     # Step 1: Download or locate test data
     if args.real_dir is None or args.synth_dir is None:
@@ -466,6 +501,8 @@ def main():
             f'log/SR_5x5_4x/ALL/{config.model_name}/checkpoints/*.pth',
             f'log/SR_5x5_4x/*/{config.model_name}/checkpoints/*.pth',
             'log/**/*.pth',
+            '*.pth',
+            '**/*.pth'
         ]
         pth_files = []
         for pattern in search_patterns:
@@ -557,25 +594,32 @@ def main():
         
     total_files = 0
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        # CodaBench requires explicit directory entries in the zip to prevent NullPointerExceptions
+        registered_dirs = set()
+        
         for root, dirs, files in os.walk(out_base):
             for file in files:
                 file_path = os.path.join(root, file)
-                
-                # Strip the temp directory prefix
                 rel_path = os.path.relpath(file_path, out_base)
                 
                 # CRITICAL: Always use forward slashes (POSIX) in zip arcnames.
-                # CodaBench's evaluation script checks f.startswith('Real/')
-                # with forward slash. Windows os.path.relpath uses backslashes.
                 arcname = rel_path.replace('\\', '/')
-                
-                # Strip any leading slash
                 if arcname.startswith('/'):
                     arcname = arcname[1:]
                 
+                # CRITICAL: Manually add containing directories to the ZIP
+                parts = arcname.split('/')
+                for i in range(1, len(parts)):
+                    dir_path = '/'.join(parts[:i]) + '/'
+                    if dir_path not in registered_dirs:
+                        zinfo = zipfile.ZipInfo(dir_path)
+                        zipf.writestr(zinfo, '')
+                        registered_dirs.add(dir_path)
+
                 zipf.write(file_path, arcname)
                 total_files += 1
 
+    print(f"\n[OK] Packaged {total_files} files into {zip_path}.")
     # Step 5: Self-Validation
     print("\n=== STEP 5: Self-Validating submission.zip ===")
     with zipfile.ZipFile(zip_path, 'r') as zf:
