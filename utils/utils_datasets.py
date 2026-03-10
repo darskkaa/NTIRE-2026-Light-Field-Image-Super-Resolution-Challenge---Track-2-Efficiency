@@ -249,9 +249,9 @@ def augmentation(data, label):
     elif mode == 7:
         data = data.transpose(1, 0)[::-1, ::-1]  # 90° + 180°
         label = label.transpose(1, 0)[::-1, ::-1]
-    # V3 FIX: Removed gamma correction and CutBlur augmentation.
-    # LFTransMamba (1st NTIRE 2025) uses ONLY 8-mode dihedral augmentation.
-    # Gamma correction warps the LR→HR target mapping, hurting PSNR.
-    # CutBlur is unproven on light field data and adds noise to the signal.
+    # Re-enable CutBlur with 25% probability as requested for additional PSNR gain
+    if random.random() < 0.25:
+        data, label = cutblur(data, label, alpha=0.7)
+        
     return data, label
 

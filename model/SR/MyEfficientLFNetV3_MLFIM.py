@@ -1371,11 +1371,26 @@ def weights_init(m):
 
 
 # ============================================================================
-# SELF-TEST & TRACK 2 EFFICIENCY VALIDATION
+# STANDALONE MODES: validate | submit
 # ============================================================================
-if __name__ == "__main__":
+
+
+def _auto_install(packages):
+    """Auto-install missing packages (for fresh Vast.ai VMs)."""
+    import subprocess, importlib
+    for pkg in packages:
+        mod = pkg.split('==')[0].replace('-', '_')
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            print(f"[AUTO-INSTALL] Installing {pkg}...")
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', pkg])
+
+
+def run_validate():
+    """Track 2 budget validation (params + FLOPs)."""
     import sys
-    
+
     print("=" * 70)
     print("🚀 MyEfficientLFNet V3 (MLFIM) - Track 2 Efficiency Strict Validation")
     print("=" * 70)
@@ -1383,8 +1398,8 @@ if __name__ == "__main__":
     class Args:
         angRes_in = 5
         scale_factor = 4
+        mlfim_mask_ratio = 0.0  # No masking at inference/validation
 
-    # 1. Instantiate the model
     try:
         model = get_model(Args())
         if torch.cuda.is_available():
@@ -1397,31 +1412,25 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Failed to instantiate model: {e}")
         sys.exit(1)
-    
-    # Track 2 Strict Budget
+
     PARAM_LIMIT = 1_000_000
     FLOP_LIMIT = 20_000_000_000
-
     all_pass = True
 
-    # 2. Strict Parameter Count
     params = sum(p.numel() for p in model.parameters())
     print(f"\n📋 Parameters: {params:,} ({params/1e6:.3f}M) / {PARAM_LIMIT:,}")
     if params > PARAM_LIMIT:
-        print("   ❌ FAIlED: Exceeds 1M parameter limit! This model will be DISQUALIFIED.")
+        print("   ❌ FAILED: Exceeds 1M parameter limit!")
         all_pass = False
     else:
         print("   ✅ PASSED: Under 1M parameter limit.")
 
-    # 3. Strict FLOPs Calculation (NTIRE Standard 5x5x32x32 via fvcore)
     try:
-        from fvcore.nn import FlopCountAnalysis
-        
-        # Standard input sizes
+        from fvcore.nn import FlopCountAnalysis, flop_count_table
+
         H, W = 5 * 32, 5 * 32
         dummy_input = torch.randn(1, 1, H, W, device=device)
-        
-        # Mamba selective scan custom FLOP op definition
+
         def _selective_scan_flop_jit(inputs, outputs):
             def flops_fn(B=1, L=256, D=768, N=16, with_D=True, with_Z=False):
                 flops = 9 * B * L * D * N
@@ -1449,23 +1458,514 @@ if __name__ == "__main__":
         flops_obj.uncalled_modules_warnings(False)
 
         flops = flops_obj.total()
-        
+
+        print("\n" + "="*70)
+        print("🔍 DETAILED FLOPs BREAKDOWN:")
+        print("="*70)
+        print(flop_count_table(flops_obj))
+        print("="*70)
+
         print(f"\n🧮 FLOPs (5x5x32x32 input): {flops/1e9:.3f}G / {FLOP_LIMIT/1e9:.0f}G")
         if flops > FLOP_LIMIT:
-            print("   ❌ FAIlED: Exceeds 20G FLOP limit! This model will be DISQUALIFIED.")
+            print("   ❌ FAILED: Exceeds 20G FLOP limit!")
             all_pass = False
         else:
             print("   ✅ PASSED: Under 20G FLOP limit.")
-            
+
     except ImportError:
-        print("\n🧮 FLOPs: (install fvcore for precise Track 2 FLOPs count over Mamba SSMS)")
-        print("   Run: pip install fvcore")
+        print("\n🧮 FLOPs: (install fvcore: pip install fvcore)")
         all_pass = False
 
     print(f"\n{'='*70}")
     if all_pass:
         print("🏆 VERDICT: APPROVED FOR NTIRE 2026 TRACK 2 EFFICIENCY!")
     else:
-        print("� VERDICT: REJECTED (BUDGET OVERRUN). DO NOT TRAIN.")
+        print("❌ VERDICT: REJECTED (BUDGET OVERRUN). DO NOT TRAIN.")
         sys.exit(1)
     print("=" * 70)
+
+
+# ==============================================================================
+# STANDALONE SUBMISSION PIPELINE — All V4 features
+# ==============================================================================
+
+def _triangle(x):
+    import numpy as np
+    x = np.array(x).astype(np.float64)
+    lessthanzero = np.logical_and((x >= -1), x < 0)
+    greaterthanzero = np.logical_and((x <= 1), x >= 0)
+    f = np.multiply((x + 1), lessthanzero) + np.multiply((1 - x), greaterthanzero)
+    return f
+
+def _cubic(x):
+    import numpy as np
+    x = np.array(x).astype(np.float64)
+    absx = np.absolute(x)
+    absx2 = np.multiply(absx, absx)
+    absx3 = np.multiply(absx2, absx)
+    f = np.multiply(1.5 * absx3 - 2.5 * absx2 + 1, absx <= 1) + \
+        np.multiply(-0.5 * absx3 + 2.5 * absx2 - 4 * absx + 2, (1 < absx) & (absx <= 2))
+    return f
+
+def _contributions(in_length, out_length, scale, kernel, k_width):
+    import numpy as np
+    from math import ceil
+    if scale < 1:
+        h = lambda x: scale * kernel(scale * x)
+        kernel_width = 1.0 * k_width / scale
+    else:
+        h = kernel
+        kernel_width = k_width
+    x = np.arange(1, out_length + 1).astype(np.float64)
+    u = x / scale + 0.5 * (1 - 1 / scale)
+    left = np.floor(u - kernel_width / 2)
+    P = int(ceil(kernel_width)) + 2
+    ind = np.expand_dims(left, axis=1) + np.arange(P) - 1
+    indices = ind.astype(np.int32)
+    weights = h(np.expand_dims(u, axis=1) - indices - 1)
+    weights = np.divide(weights, np.expand_dims(np.sum(weights, axis=1), axis=1))
+    aux = np.concatenate((np.arange(in_length), np.arange(in_length - 1, -1, step=-1))).astype(np.int32)
+    indices = aux[np.mod(indices, aux.size)]
+    ind2store = np.nonzero(np.any(weights, axis=0))
+    weights = weights[:, ind2store]
+    indices = indices[:, ind2store]
+    return weights, indices
+
+def _imresizevec(inimg, weights, indices, dim):
+    import numpy as np
+    wshape = weights.shape
+    if dim == 0:
+        weights = weights.reshape((wshape[0], wshape[2], 1, 1))
+        outimg = np.sum(weights * ((inimg[indices].squeeze(axis=1)).astype(np.float64)), axis=1)
+    elif dim == 1:
+        weights = weights.reshape((1, wshape[0], wshape[2], 1))
+        outimg = np.sum(weights * ((inimg[:, indices].squeeze(axis=2)).astype(np.float64)), axis=2)
+    if inimg.dtype == np.uint8:
+        outimg = np.clip(outimg, 0, 255)
+        return np.around(outimg).astype(np.uint8)
+    else:
+        return outimg
+
+def _imresize_matlab(I, scalar_scale=None, method='bicubic', output_shape=None):
+    """MATLAB-compatible bicubic resize. Handles 2D and multi-channel arrays."""
+    import numpy as np
+    from math import ceil
+    kernel = _cubic if method == 'bicubic' else _triangle
+    kernel_width = 4.0
+    if scalar_scale is not None:
+        scalar_scale = float(scalar_scale)
+        scale = [scalar_scale, scalar_scale]
+        output_size = [int(ceil(scalar_scale * I.shape[0])), int(ceil(scalar_scale * I.shape[1]))]
+    elif output_shape is not None:
+        scale = [1.0 * output_shape[k] / I.shape[k] for k in range(2)]
+        output_size = list(output_shape)
+    else:
+        raise ValueError('scalar_scale OR output_shape should be defined!')
+    scale_np = np.array(scale)
+    order = np.argsort(scale_np)
+    weights = []
+    indices = []
+    for k in range(2):
+        w, ind = _contributions(I.shape[k], output_size[k], scale[k], kernel, kernel_width)
+        weights.append(w)
+        indices.append(ind)
+    B = np.copy(I)
+    flag2D = False
+    if B.ndim == 2:
+        B = np.expand_dims(B, axis=2)
+        flag2D = True
+    for k in range(2):
+        dim = order[k]
+        B = _imresizevec(B, weights[dim], indices[dim], dim)
+    if flag2D:
+        B = np.squeeze(B, axis=2)
+    return B
+
+
+def _rgb2ycbcr(x):
+    import numpy as np
+    y = np.zeros(x.shape, dtype='double')
+    y[:,:,0] =  65.481 * x[:, :, 0] + 128.553 * x[:, :, 1] +  24.966 * x[:, :, 2] +  16.0
+    y[:,:,1] = -37.797 * x[:, :, 0] -  74.203 * x[:, :, 1] + 112.000 * x[:, :, 2] + 128.0
+    y[:,:,2] = 112.000 * x[:, :, 0] -  93.786 * x[:, :, 1] -  18.214 * x[:, :, 2] + 128.0
+    y = y / 255.0
+    return y
+
+def _ycbcr2rgb(x):
+    import numpy as np
+    mat = np.array(
+        [[65.481, 128.553, 24.966],
+         [-37.797, -74.203, 112.0],
+         [112.0, -93.786, -18.214]])
+    mat_inv = np.linalg.inv(mat)
+    offset = np.matmul(mat_inv, np.array([16, 128, 128]))
+    mat_inv = mat_inv * 255
+    y = np.zeros(x.shape, dtype='double')
+    y[:,:,0] = mat_inv[0,0]*x[:,:,0] + mat_inv[0,1]*x[:,:,1] + mat_inv[0,2]*x[:,:,2] - offset[0]
+    y[:,:,1] = mat_inv[1,0]*x[:,:,0] + mat_inv[1,1]*x[:,:,1] + mat_inv[1,2]*x[:,:,2] - offset[1]
+    y[:,:,2] = mat_inv[2,0]*x[:,:,0] + mat_inv[2,1]*x[:,:,1] + mat_inv[2,2]*x[:,:,2] - offset[2]
+    return y
+
+
+def _ImageExtend(Im, bdr):
+    [_, _, h, w] = Im.size()
+    Im_lr = torch.flip(Im, dims=[-1])
+    Im_ud = torch.flip(Im, dims=[-2])
+    Im_diag = torch.flip(Im, dims=[-1, -2])
+    Im_up = torch.cat((Im_diag, Im_ud, Im_diag), dim=-1)
+    Im_mid = torch.cat((Im_lr, Im, Im_lr), dim=-1)
+    Im_down = torch.cat((Im_diag, Im_ud, Im_diag), dim=-1)
+    Im_Ext = torch.cat((Im_up, Im_mid, Im_down), dim=-2)
+    Im_out = Im_Ext[:, :, h - bdr[0]: 2 * h + bdr[1], w - bdr[2]: 2 * w + bdr[3]]
+    return Im_out
+
+
+def _LFdivide(data, angRes, patch_size, stride):
+    """V3-FIXED: Compute numU/numV from actual padded dimensions."""
+    from einops import rearrange
+    data = rearrange(data, '(a1 h) (a2 w) -> (a1 a2) 1 h w', a1=angRes, a2=angRes)
+    [_, _, h0, w0] = data.size()
+    bdr = (patch_size - stride) // 2
+    data_pad = _ImageExtend(data, [bdr, bdr+stride-1, bdr, bdr+stride-1])
+    subLF = F.unfold(data_pad, kernel_size=patch_size, stride=stride)
+    h_pad, w_pad = data_pad.shape[2], data_pad.shape[3]
+    numU = (h_pad - patch_size) // stride + 1
+    numV = (w_pad - patch_size) // stride + 1
+    subLF = rearrange(subLF, '(a1 a2) (h w) (n1 n2) -> n1 n2 (a1 h) (a2 w)',
+                      a1=angRes, a2=angRes, h=patch_size, w=patch_size, n1=numU, n2=numV)
+    return subLF
+
+
+def _LFintegrate_gaussian(subLF, angRes, pz, stride, h, w):
+    """Gaussian-weighted patch stitching (matches utils.py exactly)."""
+    from einops import rearrange
+    if subLF.dim() == 4:
+        subLF = rearrange(subLF, 'n1 n2 (a1 h) (a2 w) -> n1 n2 a1 a2 h w',
+                          a1=angRes, a2=angRes)
+    n1, n2, a1, a2, pH, pW = subLF.shape
+    sigma = pz / 3.0
+    ax = torch.arange(pz, dtype=torch.float32, device=subLF.device) - (pz - 1) / 2.0
+    gauss_1d = torch.exp(-0.5 * (ax / sigma) ** 2)
+    gauss_2d = gauss_1d.unsqueeze(1) * gauss_1d.unsqueeze(0)
+    gauss_2d = gauss_2d / gauss_2d.max()
+    canvas_h = (n1 - 1) * stride + pz
+    canvas_w = (n2 - 1) * stride + pz
+    outLF = torch.zeros(a1, a2, canvas_h, canvas_w, dtype=subLF.dtype, device=subLF.device)
+    weight_map = torch.zeros(1, 1, canvas_h, canvas_w, dtype=subLF.dtype, device=subLF.device)
+    for i in range(n1):
+        for j in range(n2):
+            top = i * stride
+            left = j * stride
+            outLF[:, :, top:top+pz, left:left+pz] += subLF[i, j] * gauss_2d
+            weight_map[:, :, top:top+pz, left:left+pz] += gauss_2d
+    weight_map = weight_map.clamp(min=1e-8)
+    outLF = outLF / weight_map
+    bdr_hr = (pz - stride) // 2
+    outLF = outLF[:, :, bdr_hr : bdr_hr + h, bdr_hr : bdr_hr + w]
+    return outLF
+
+
+def _run_sr_inference(Lr_SAI_y_tensor, net, device, angRes, scale_factor, patch_size, stride, minibatch):
+    """Run SR inference on Y channel. Forces FP32 precision."""
+    from einops import rearrange
+    net.float()
+    net.eval()
+    subLFin = _LFdivide(Lr_SAI_y_tensor.squeeze(), angRes, patch_size, stride)
+    numU, numV, pH, pW = subLFin.size()
+    subLFin = rearrange(subLFin, 'n1 n2 a1h a2w -> (n1 n2) 1 a1h a2w')
+    subLFout = torch.zeros(numU * numV, 1, angRes * patch_size * scale_factor,
+                           angRes * patch_size * scale_factor)
+    data_info = [angRes, angRes]
+    torch.cuda.empty_cache()
+    with torch.no_grad():
+        for i in range(0, numU * numV, minibatch):
+            end_idx = min(i + minibatch, numU * numV)
+            tmp = subLFin[i:end_idx, :, :, :].float()
+            out = net(tmp.to(device), data_info)
+            subLFout[i:end_idx, :, :, :] = out.float().cpu()
+    subLFout = rearrange(subLFout, '(n1 n2) 1 a1h a2w -> n1 n2 a1h a2w', n1=numU, n2=numV)
+    sr_pz = patch_size * scale_factor
+    sr_stride = stride * scale_factor
+    total_h = Lr_SAI_y_tensor.squeeze().shape[-2] // angRes
+    total_w = Lr_SAI_y_tensor.squeeze().shape[-1] // angRes
+    target_h = total_h * scale_factor
+    target_w = total_w * scale_factor
+    Sr_4D_y = _LFintegrate_gaussian(subLFout, angRes, sr_pz, sr_stride, target_h, target_w)
+    return Sr_4D_y
+
+
+def _process_mat_file(mat_file, save_dir, net, device, angRes, scale_factor, patch_size, stride, minibatch):
+    """Process .mat → 5x5 View BMPs."""
+    import numpy as np, h5py, scipy.io as scio, imageio
+    from pathlib import Path
+    from einops import rearrange
+
+    try:
+        data = h5py.File(mat_file, 'r')
+        LF = np.array(data[('LF')]).transpose((4, 3, 2, 1, 0))
+    except:
+        data = scio.loadmat(mat_file)
+        LF = np.array(data['LF'])
+
+    (U, V, H, W, _) = LF.shape
+    LF = LF[(U-angRes)//2:(U+angRes)//2, (V-angRes)//2:(V+angRes)//2, 0:H, 0:W, 0:3]
+    LF = LF.astype('double')
+    (U, V, H, W, _) = LF.shape
+
+    Sr_SAI_cbcr = np.zeros((U * H * scale_factor, V * W * scale_factor, 2), dtype='single')
+    Lr_SAI_y = np.zeros((U * H, V * W), dtype='single')
+
+    for u in range(U):
+        for v in range(V):
+            tmp_Lr_rgb = LF[u, v, :, :, :]
+            tmp_Lr_ycbcr = _rgb2ycbcr(tmp_Lr_rgb)
+            Lr_SAI_y[u * H:(u+1) * H, v * W:(v+1) * W] = tmp_Lr_ycbcr[:, :, 0]
+            tmp_Lr_cbcr = tmp_Lr_ycbcr[:, :, 1:3]
+            tmp_Sr_cbcr = _imresize_matlab(tmp_Lr_cbcr, scalar_scale=scale_factor)
+            Sr_SAI_cbcr[u*H*scale_factor:(u+1)*H*scale_factor,
+                        v*W*scale_factor:(v+1)*W*scale_factor, :] = tmp_Sr_cbcr
+
+    Lr_SAI_y_tensor = torch.from_numpy(Lr_SAI_y).unsqueeze(0).unsqueeze(0)
+    Sr_4D_y = _run_sr_inference(Lr_SAI_y_tensor, net, device, angRes, scale_factor, patch_size, stride, minibatch)
+
+    Sr_SAI_y = rearrange(Sr_4D_y, 'a1 a2 h w -> 1 1 (a1 h) (a2 w)')
+    Sr_SAI_cbcr_tensor = torch.from_numpy(Sr_SAI_cbcr).permute(2, 0, 1).unsqueeze(0)
+    Sr_SAI_ycbcr = torch.cat((Sr_SAI_y.cpu(), Sr_SAI_cbcr_tensor), dim=1)
+    Sr_SAI_rgb = np.round(_ycbcr2rgb(Sr_SAI_ycbcr.squeeze().permute(1, 2, 0).numpy()).clip(0, 1) * 255.0).astype('uint8')
+    Sr_4D_rgb = rearrange(Sr_SAI_rgb, '(a1 h) (a2 w) c -> a1 a2 h w c', a1=angRes, a2=angRes)
+
+    scene_name = Path(mat_file).name.replace('.mat', '').replace('.h5', '')
+    scene_dir = os.path.join(save_dir, scene_name)
+    os.makedirs(scene_dir, exist_ok=True)
+    for i in range(angRes):
+        for j in range(angRes):
+            imageio.imwrite(os.path.join(scene_dir, f'View_{i}_{j}.bmp'), Sr_4D_rgb[i, j])
+
+
+def run_submit():
+    """Full CodaBench submission pipeline with SWA, optimized for Vast.ai 5090."""
+    import argparse, os, sys, glob, subprocess, shutil, zipfile, re
+    import numpy as np
+    from collections import OrderedDict
+    from pathlib import Path
+    from tqdm import tqdm
+
+    # Auto-install deps for fresh VMs
+    _auto_install(['gdown', 'imageio', 'einops', 'h5py', 'scipy', 'tqdm'])
+
+    parser = argparse.ArgumentParser("V3 MLFIM Standalone Submission Generator")
+    parser.add_argument("mode", nargs='?', default='submit')  # consumed by caller
+    parser.add_argument("--ckpt", type=str, default=None, help="Path to checkpoint")
+    parser.add_argument("--real_dir", type=str, default=None, help="Path to Real .mat files")
+    parser.add_argument("--synth_dir", type=str, default=None, help="Path to Synth .mat files")
+    parser.add_argument("--swa_n", type=int, default=10, help="SWA: average last N checkpoints")
+    parser.add_argument("--no_swa", action="store_true", help="Disable SWA")
+    parser.add_argument("--prefer_ema", action="store_true", help="Use EMA weights for SWA (default: raw state_dict)")
+    parser.add_argument("--force-download", action="store_true")
+    args, _ = parser.parse_known_args()
+
+    # Config optimized for 5090 (24GB VRAM)
+    angRes = 5
+    scale_factor = 4
+    patch_size = 48
+    stride = 4          # 91.7% overlap for max Gaussian blending
+    minibatch = 16      # 5090 can handle 16 patches at once
+    mask_ratio = 0.0    # CRITICAL: no masking at inference
+
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    print(f"\n{'='*60}")
+    print(f"V3 MLFIM Standalone Submission — Device: {device}")
+    print(f"Config: patch={patch_size}, stride={stride}, minibatch={minibatch}")
+    print(f"{'='*60}")
+
+    # --- Download test data ---
+    TEST_REAL_LINK = "https://drive.google.com/drive/folders/1FxWmbrbH2mYQgApjOmj-2UM1Yu7fQ1Rg"
+    TEST_SYNTH_LINK = "https://drive.google.com/drive/folders/120fxXLA20jI7tWrZ-YGn14e4B41cIPq7"
+
+    real_dir = args.real_dir or "datasets_test/NTIRE_Test_Real"
+    synth_dir = args.synth_dir or "datasets_test/NTIRE_Test_Synth"
+
+    if args.real_dir is None or args.synth_dir is None:
+        for label, link, d in [("Real", TEST_REAL_LINK, real_dir), ("Synth", TEST_SYNTH_LINK, synth_dir)]:
+            mat_count = len(glob.glob(f'{d}/**/*.mat', recursive=True)) if os.path.exists(d) else 0
+            if args.force_download or mat_count < 16:
+                print(f"Downloading {label} test data...")
+                os.makedirs(d, exist_ok=True)
+                fid = link.split('/')[-1].split('?')[0]
+                subprocess.run(f'gdown --folder {fid} -O "{d}"', shell=True)
+            else:
+                print(f"✅ {label}: {mat_count} .mat files found")
+
+    real_files = sorted(glob.glob(f"{real_dir}/**/*.mat", recursive=True))
+    synth_files = sorted(glob.glob(f"{synth_dir}/**/*.mat", recursive=True))
+    print(f"Found {len(real_files)} Real + {len(synth_files)} Synth test scenes")
+
+    # --- Load model ---
+    class Cfg:
+        angRes_in = 5
+        scale_factor = 4
+        mlfim_mask_ratio = 0.0
+
+    net = get_model(Cfg()).to(device)
+
+    # --- Auto-find & SWA checkpoint loading ---
+    if args.ckpt is None:
+        search_patterns = [
+            'log/SR_5x5_4x/ALL/MyEfficientLFNetV3_MLFIM/checkpoints/*.pth',
+            'log/SR_5x5_4x/*/MyEfficientLFNetV3_MLFIM/checkpoints/*.pth',
+            'log/**/*.pth', '*.pth', '**/*.pth'
+        ]
+        pth_files = []
+        for pattern in search_patterns:
+            pth_files = glob.glob(pattern, recursive=True)
+            if pth_files:
+                break
+        if not pth_files:
+            print("❌ No .pth checkpoint found! Use --ckpt <path>")
+            sys.exit(1)
+
+        pth_files.sort(key=os.path.getmtime, reverse=True)
+        finetune_ckpts = [f for f in pth_files if 'finetune' in f and 'epoch' in f]
+        finetune_ckpts.sort(key=lambda x: int(re.search(r'epoch_(\d+)_model\.pth', os.path.basename(x)).group(1)) if re.search(r'epoch_(\d+)_model\.pth', os.path.basename(x)) else 0)
+
+        if not args.no_swa and len(finetune_ckpts) >= 2:
+            last_n = min(args.swa_n, len(finetune_ckpts))
+            to_average = finetune_ckpts[-last_n:]
+            weight_key = 'ema_state_dict' if args.prefer_ema else 'state_dict'
+            print(f"\n[SWA] Averaging last {last_n}/{len(finetune_ckpts)} ckpts using '{weight_key}':")
+            for p in to_average:
+                print(f"  - {os.path.basename(p)}")
+
+            avg_state_dict = None
+            for path in to_average:
+                ckpt = torch.load(path, map_location='cpu')
+                if args.prefer_ema:
+                    s_dict = ckpt.get('ema_state_dict', ckpt.get('state_dict', ckpt))
+                else:
+                    s_dict = ckpt.get('state_dict', ckpt.get('ema_state_dict', ckpt))
+                if avg_state_dict is None:
+                    avg_state_dict = OrderedDict()
+                    for key, value in s_dict.items():
+                        avg_state_dict[key] = value.float().clone()
+                else:
+                    for key, value in s_dict.items():
+                        if key in avg_state_dict:
+                            avg_state_dict[key] += value.float()
+            for key in avg_state_dict:
+                avg_state_dict[key] /= float(last_n)
+            checkpoint = {'state_dict': avg_state_dict}
+            ckpt_label = f"[SWA: {last_n} ckpts, {weight_key}]"
+        else:
+            ckpt_label = os.path.basename(pth_files[0])
+            checkpoint = torch.load(pth_files[0], map_location=device)
+    else:
+        ckpt_label = os.path.basename(args.ckpt)
+        checkpoint = torch.load(args.ckpt, map_location=device)
+
+    # Load weights (priority: state_dict > ema > raw)
+    # IMPORTANT: Use raw state_dict first to avoid double-smoothing.
+    # EMA weights are already a moving average — SWA on top of EMA
+    # causes over-smoothing that washes out high-frequency detail.
+    if isinstance(checkpoint, dict):
+        state_dict = checkpoint.get('state_dict', checkpoint.get('ema_state_dict', checkpoint))
+    else:
+        state_dict = checkpoint
+    cleaned = {k.replace('module.', ''): v for k, v in state_dict.items()}
+    net.load_state_dict(cleaned, strict=False)
+    net.float()
+    net.eval()
+    print(f"✅ Loaded: {ckpt_label} ({len(cleaned)} params)")
+
+    # --- Run inference ---
+    out_base = "submission_temp"
+    shutil.rmtree(out_base, ignore_errors=True)
+    os.makedirs(f"{out_base}/Real", exist_ok=True)
+    os.makedirs(f"{out_base}/Synth", exist_ok=True)
+
+    failed = []
+    for label, files, subdir in [("Real", real_files, "Real"), ("Synth", synth_files, "Synth")]:
+        print(f"\nProcessing {len(files)} {label} scenes...")
+        for f in tqdm(files, ncols=70):
+            try:
+                _process_mat_file(f, f"{out_base}/{subdir}", net, device, angRes, scale_factor, patch_size, stride, minibatch)
+                torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"\n❌ FAILED {label}/{Path(f).stem}: {e}")
+                import traceback; traceback.print_exc()
+                failed.append(f"{label}/{Path(f).stem}")
+
+    if failed:
+        print(f"\n⚠️  {len(failed)} scenes FAILED: {failed}")
+
+    # --- Create zip ---
+    zip_path = "submission.zip"
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+
+    total_files = 0
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        registered_dirs = set()
+        for root, dirs, files in os.walk(out_base):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, out_base).replace('\\', '/')
+                parts = arcname.split('/')
+                for i in range(1, len(parts)):
+                    dir_path = '/'.join(parts[:i]) + '/'
+                    if dir_path not in registered_dirs:
+                        zipf.writestr(zipfile.ZipInfo(dir_path), '')
+                        registered_dirs.add(dir_path)
+                zipf.write(file_path, arcname)
+                total_files += 1
+
+    print(f"\n✅ submission.zip created ({total_files} files)")
+
+    # --- Validate zip ---
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        entries = zf.namelist()
+        bmp_count = sum(1 for e in entries if e.endswith('.bmp'))
+        real_scenes = set(e.split('/')[1] for e in entries if e.startswith('Real/') and len(e.split('/')) >= 3 and e.endswith('.bmp'))
+        synth_scenes = set(e.split('/')[1] for e in entries if e.startswith('Synth/') and len(e.split('/')) >= 3 and e.endswith('.bmp'))
+        expected = (len(real_scenes) + len(synth_scenes)) * 25
+        print(f"   Real scenes: {len(real_scenes)}, Synth scenes: {len(synth_scenes)}, BMPs: {bmp_count}/{expected}")
+        if bmp_count == expected and len(real_scenes) >= 16 and len(synth_scenes) >= 16:
+            print("✅ VALIDATION PASSED — ready for CodaBench upload!")
+        else:
+            print("⚠️  Validation warning — check scene counts")
+
+
+# ==============================================================================
+# ENTRY POINT
+# ==============================================================================
+VALID_MODES = {"validate", "submit"}
+
+def _detect_mode():
+    """Detect CLI mode, handling Colab/Jupyter kernel launcher args.
+    
+    In Colab, sys.argv looks like:
+      ['/usr/local/lib/python3.12/dist-packages/colab_kernel_launcher.py', 
+       '-f', '/root/.local/share/jupyter/runtime/kernel-xxx.json']
+    
+    So sys.argv[1] is '-f', not 'validate'/'submit'. We must check if
+    the first positional arg is actually a valid mode.
+    
+    On Vast.ai VMs with normal CLI usage, sys.argv is:
+      ['MyEfficientLFNetV3_MLFIM.py', 'validate']  — works correctly.
+    """
+    import sys
+    # Search through argv for a valid mode keyword
+    for arg in sys.argv[1:]:
+        if arg in VALID_MODES:
+            return arg
+    # Default to validate if no valid mode found (Colab, Jupyter, etc.)
+    return "validate"
+
+
+if __name__ == "__main__":
+    mode = _detect_mode()
+
+    if mode == "validate":
+        run_validate()
+    elif mode == "submit":
+        run_submit()
+

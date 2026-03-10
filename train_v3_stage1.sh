@@ -34,6 +34,7 @@ EPOCHS=100          # LFTransMamba (1st NTIRE 2025): 100 epochs
 BATCH=3             # LFTransMamba Track 2 exact value
 LR=2e-4             # LFTransMamba Track 2: 2e-4 (not 3e-4)
 MASK_RATIO=0.25     # LFTransMamba paper Table 4: 0.25 optimal for Track 2
+SCHED_TYPE=cosine   # CosineAnnealingLR: smooth decay to 1e-6
 NUM_WORKERS=16
 
 # ---- PATHS (adjust for your setup) ----
@@ -101,7 +102,7 @@ if [ -n "$(find data_for_training -name "*.h5" | head -1)" ]; then
     success "Training data (.h5) already exists. Skipping generation."
 else
     info "Generating SR_5x5_4x training patches..."
-    python Generate_Data_for_Training.py --angRes 5 --scale_factor 4 --src_data_path ./datasets/ --save_data_path ./
+    python Generate_Data_for_Training.py --angRes 5 --scale_factor 4 --src_data_path ./datasets/ --save_data_path ./ --n_angular_crops 5
 fi
 
 if [ -n "$(find data_for_test -name "*.h5" | head -1)" ]; then
@@ -157,7 +158,9 @@ else
         --lr "$LR" \
         --epoch "$EPOCHS" \
         --mlfim_mask_ratio "$MASK_RATIO" \
+        --loss_type charbonnier \
         --num_workers "$NUM_WORKERS" \
+        --scheduler_type "$SCHED_TYPE" \
         --path_for_train "$TRAIN_DATA" \
         --path_for_test "$TEST_DATA" \
         --data_name ALL

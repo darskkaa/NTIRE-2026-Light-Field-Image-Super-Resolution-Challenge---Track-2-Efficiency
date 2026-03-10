@@ -7,9 +7,9 @@
 # Research-backed hyperparameters:
 #   - LR: 2e-4 (LFTransMamba default)
 #   - Optimizer: Adam β=(0.99, 0.999) (LFTransMamba exact)
-#   - Scheduler: StepLR ×0.5 every 80 epochs (LFTransMamba Track 2 exact)
-#   - Loss: Pure Charbonnier (SwinIR/HAT/LFMamba/LFTransMamba all use L1/Charb)
-#   - Grad accum 2 steps → effective batch=8
+#   - Scheduler: CosineAnnealingLR to eta_min=1e-6 (smooth decay — no plateau)
+#   - Loss: Pure Charbonnier (smooth L1, better near-zero gradients)
+#   - Grad accum 2 steps → effective batch=6
 # =============================================================================
 
 set -e
@@ -50,7 +50,8 @@ EPOCHS=200
 BATCH=3               # LFTransMamba Track 2 exact value
 LR=2e-4               # LFTransMamba Track 2: 2e-4
 GRAD_ACCUM=2           # Eff batch = 3 × 2 = 6
-LOSS_TYPE=l1           # LFTransMamba: L1Loss
+LOSS_TYPE=charbonnier   # Charbonnier: smooth L1, better near-zero gradients
+SCHED_TYPE=cosine      # CosineAnnealingLR: smooth decay to 1e-6
 NUM_WORKERS=16
 
 # ---- PATHS ----
@@ -62,7 +63,7 @@ info "Model:          $MODEL_NAME"
 info "Checkpoint:     $PRETRAIN_CKPT"
 info "Epochs:         $EPOCHS"
 info "Batch:          $BATCH × $GRAD_ACCUM accum = $((BATCH * GRAD_ACCUM)) effective"
-info "LR:             $LR (StepLR ×0.5/80ep)"
+info "LR:             $LR (CosineAnnealing to eta_min=1e-6)"
 info "Loss:           $LOSS_TYPE (LFTransMamba default)"
 echo ""
 
@@ -102,6 +103,7 @@ python train_mlfim_v3.py \
     --epoch "$EPOCHS" \
     --grad_accum_steps "$GRAD_ACCUM" \
     --loss_type "$LOSS_TYPE" \
+    --scheduler_type "$SCHED_TYPE" \
     --use_pre_ckpt \
     --path_pre_pth "$PRETRAIN_CKPT" \
     --num_workers "$NUM_WORKERS" \

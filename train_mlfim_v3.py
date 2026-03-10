@@ -4,24 +4,25 @@ MLFIM Training V3 — Max-PSNR Pipeline
 Research-backed training recipe for NTIRE 2026 Track 2 Efficiency.
 
 Key design decisions (all backed by published LFSR papers):
-  1. Loss: Pure L1 (LFTransMamba NTIRE 2025 default) or Charbonnier (alternative)
+  1. Loss: Charbonnier (smooth L1, better near-zero gradients) — default
   2. Optimizer: Adam with β1=0.99, β2=0.999 (LFTransMamba 1st NTIRE 2025 exact)
-  3. Scheduler: StepLR ×0.5 every 80 epochs (LFTransMamba Track 2 exact)
+  3. Scheduler: CosineAnnealingLR to eta_min=1e-6 — smooth decay (default)
   4. LR: 2e-4 (LFTransMamba default)
   5. No bfloat16: full float32 training (800K model doesn't need mixed precision)
   6. EMA: decay=0.997 (LFTransMamba exact)
 
 Usage:
   # Stage 1: MLFIM Pre-training (100 epochs)
-  python train_mlfim_v3.py --stage pretrain --mlfim_mask_ratio 0.35 --epoch 100 \\
-      --lr 2e-4 --model_name MyEfficientLFNetV3_MLFIM --loss_type l1
+  python train_mlfim_v3.py --stage pretrain --mlfim_mask_ratio 0.25 --epoch 100 \\
+      --lr 2e-4 --model_name MyEfficientLFNetV3_MLFIM --loss_type charbonnier
 
   # Stage 2: Fine-tuning (200 epochs, max-PSNR recipe)
   python train_mlfim_v3.py --stage finetune --epoch 200 --lr 2e-4 \\
-      --loss_type l1 \\
+      --loss_type charbonnier --scheduler_type cosine \\
       --path_pre_pth <stage1_best.pth> --model_name MyEfficientLFNetV3_MLFIM \\
       --use_pre_ckpt
 """
+
 
 import argparse
 import importlib
@@ -58,13 +59,14 @@ def parse_mlfim_args():
     parser.add_argument('--loss_warmup_epochs', type=int, default=0,
                         help='Number of finetune epochs to use L1-only before '
                              'switching to composite loss (0 = no warmup)')
-    parser.add_argument('--loss_type', type=str, default='l1',
+    parser.add_argument('--loss_type', type=str, default='charbonnier',
                         choices=['l1', 'charbonnier', 'composite'],
-                        help='Loss function: l1 (LFTransMamba default), '
-                             'charbonnier, or composite (Charb+FFT+SSIM+Grad+Ang)')
-    # NOTE: --beta2, --weight_decay, --eta_min removed.
-    # All published LFSR papers (LFTransMamba, MLFSR, SwinIR, HAT, MambaIR)
-    # use plain Adam (no weight decay) with StepLR (not cosine).
+                        help='Loss function: charbonnier (default, smooth L1), '
+                             'l1, or composite (Charb+FFT+SSIM+Grad+Ang)')
+    parser.add_argument('--scheduler_type', type=str, default='cosine',
+                        choices=['step', 'cosine'],
+                        help='LR scheduler: step (StepLR x0.5/80ep) or '
+                             'cosine (CosineAnnealingLR to eta_min=1e-6)')
 
     mlfim_args, _ = parser.parse_known_args()
 
@@ -76,6 +78,7 @@ def parse_mlfim_args():
     base_args.grad_accum_steps = mlfim_args.grad_accum_steps
     base_args.loss_warmup_epochs = mlfim_args.loss_warmup_epochs
     base_args.loss_type = mlfim_args.loss_type
+    base_args.scheduler_type = mlfim_args.scheduler_type
 
     return base_args
 
@@ -387,13 +390,17 @@ def main():
     logger.log_string(f'Optimizer: Adam, LR={lr}, β=(0.99, 0.999)')
 
     # ---- Scheduler ----
-    # LFTransMamba Track 2 exact config: train-lr-scheduler=3
-    #   = StepLR(step_size=80, gamma=0.5) for 100 epochs
-    # This means LR stays constant for 80 epochs, then halves once.
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=80, gamma=0.5
-    )
-    logger.log_string(f'Scheduler: StepLR ×0.5 every 80 epochs')
+    sched_type = getattr(args, 'scheduler_type', 'cosine')
+    if sched_type == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epoch, eta_min=1e-6
+        )
+        logger.log_string(f'Scheduler: CosineAnnealingLR (T_max={args.epoch}, eta_min=1e-6)')
+    else:
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=80, gamma=0.5
+        )
+        logger.log_string(f'Scheduler: StepLR ×0.5 every 80 epochs')
 
     # Restore optimizer/scheduler state on pretrain resume
     if _resume_optimizer is not None and stage == 'pretrain':
