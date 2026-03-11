@@ -54,14 +54,28 @@ echo ""
 # =============================================================================
 header "📀 Dataset Preparation"
 
+# Install aria2c for blazing fast multi-connection downloads
+apt-get install -y aria2 2>/dev/null || true
 pip install gdown -q 2>/dev/null || true
 mkdir -p datasets downloads
+
+fast_download() {
+    # Uses aria2c with 16 parallel connections; falls back to wget
+    local URL=$1
+    local OUTPUT=$2
+    if command -v aria2c &>/dev/null; then
+        info "Downloading with aria2c (16 connections)..."
+        aria2c -x 16 -s 16 -k 1M --file-allocation=none -d "$(dirname "$OUTPUT")" -o "$(basename "$OUTPUT")" "$URL"
+    else
+        info "Downloading with wget..."
+        wget -O "$OUTPUT" "$URL"
+    fi
+}
 
 check_and_prepare() {
     FILE=$1
     URL=$2
     DEST="datasets/$3"
-    HF_REPO=$4
 
     if [ -d "$DEST" ]; then
         success "Dataset '$3' found (Skipping)"
@@ -74,18 +88,10 @@ check_and_prepare() {
     elif [ ! -f "downloads/$FILE" ]; then
         if [ -n "$URL" ]; then
             warn "'$FILE' not found. Downloading..."
-            if [[ "$URL" == *"huggingface.co"* ]] && [ -n "$HF_REPO" ]; then
-                 # Use hf_transfer for max speed (works on any huggingface_hub version)
-                 pip install -q -U huggingface_hub hf_transfer 2>/dev/null
-                 HF_HUB_ENABLE_HF_TRANSFER=1 python -c "
-import os; os.environ['HF_HUB_ENABLE_HF_TRANSFER']='1'
-from huggingface_hub import hf_hub_download
-hf_hub_download(repo_id='$HF_REPO', filename='$FILE', repo_type='dataset', local_dir='downloads/')
-print('Download complete: $FILE')
-"
+            if [[ "$URL" == *"drive.google.com"* ]]; then
+                 gdown --fuzzy "$URL" -O "downloads/$FILE"
             else
-                 # Fallback: wget for Google Drive or other URLs
-                 wget -O "downloads/$FILE" "$URL" || (pip install -q gdown 2>/dev/null && gdown --fuzzy "$URL" -O "downloads/$FILE")
+                 fast_download "$URL" "downloads/$FILE"
             fi
         fi
     fi
@@ -97,11 +103,11 @@ print('Download complete: $FILE')
     fi
 }
 
-check_and_prepare "EPFL.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/EPFL.zip?download=true" "EPFL" "aaaaaa3232312/efpl"
-check_and_prepare "HCI_new.zip" "https://drive.google.com/file/d/1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9/view?usp=drive_link" "HCI_new" ""
-check_and_prepare "HCI_old.zip" "https://drive.google.com/file/d/1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG/view?usp=drive_link" "HCI_old" ""
-check_and_prepare "INRIA_Lytro.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/INRIA_Lytro.zip?download=true" "INRIA_Lytro" "aaaaaa3232312/efpl"
-check_and_prepare "Stanford_Gantry.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/Stanford_Gantry.zip?download=true" "Stanford_Gantry" "aaaaaa3232312/efpl"
+check_and_prepare "EPFL.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/EPFL.zip?download=true" "EPFL"
+check_and_prepare "HCI_new.zip" "https://drive.google.com/file/d/1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9/view?usp=drive_link" "HCI_new"
+check_and_prepare "HCI_old.zip" "https://drive.google.com/file/d/1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG/view?usp=drive_link" "HCI_old"
+check_and_prepare "INRIA_Lytro.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/INRIA_Lytro.zip?download=true" "INRIA_Lytro"
+check_and_prepare "Stanford_Gantry.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/Stanford_Gantry.zip?download=true" "Stanford_Gantry"
 success "Dataset preparation complete"
 
 # =============================================================================
