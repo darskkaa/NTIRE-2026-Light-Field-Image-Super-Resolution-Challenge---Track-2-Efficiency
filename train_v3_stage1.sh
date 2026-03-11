@@ -76,12 +76,13 @@ check_and_prepare() {
             warn "'$FILE' not found. Downloading..."
             if [[ "$URL" == *"huggingface.co"* ]]; then
                  # Ensure hf_transfer is installed and used for insane speeds
-                 pip install -q -U "huggingface_hub[cli]" hf_transfer
-                 HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download "$HF_REPO" "$FILE" --repo-type dataset --local-dir downloads/
+                 pip install -q -U huggingface_hub hf_transfer
+                 export PATH="$HOME/.local/bin:$PATH"
+                 HF_HUB_ENABLE_HF_TRANSFER=1 python -m huggingface_hub.cli download "$HF_REPO" "$FILE" --repo-type dataset --local-dir downloads/
             else
                  # Fallback for Google Drive links (like HCI datasets)
-                 pip install -q gdown
-                 gdown --fuzzy "$URL" -O "downloads/$FILE"
+                 pip install -q -U gdown
+                 python -m gdown --fuzzy "$URL" -O "downloads/$FILE"
             fi
         fi
     fi
