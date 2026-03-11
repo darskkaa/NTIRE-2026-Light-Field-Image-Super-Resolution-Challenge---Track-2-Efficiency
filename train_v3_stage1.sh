@@ -140,11 +140,12 @@ print(f'Parameters: {params:,} ({params/1e6:.3f}M)')
 assert params < 1_000_000, f'OVER BUDGET: {params} > 1M'
 print('✅ Under 1M param limit')
 
-# FLOPs check
+# FLOPs check (model + input must be on CUDA for mamba-ssm)
 try:
     from fvcore.nn import FlopCountAnalysis
-    inp = torch.randn(1, 1, $ANGRES * 32, $ANGRES * 32)
-    flops = FlopCountAnalysis(m, inp).total()
+    m_cuda = m.cuda()
+    inp = torch.randn(1, 1, $ANGRES * 32, $ANGRES * 32).cuda()
+    flops = FlopCountAnalysis(m_cuda, inp).total()
     gflops = flops / 1e9
     print(f'FLOPs: {flops:,} ({gflops:.2f}G)')
     assert gflops < 20.0, f'OVER BUDGET: {gflops:.2f}G > 20G'
