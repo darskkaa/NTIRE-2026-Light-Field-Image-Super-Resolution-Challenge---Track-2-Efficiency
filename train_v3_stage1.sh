@@ -123,7 +123,7 @@ success "Data generation complete"
 # =============================================================================
 header "🧪 Verify Model Efficiency"
 
-info "Running V3 model self-test..."
+info "Running V3 model self-test (params + FLOPs)..."
 python -c "
 import torch
 import sys
@@ -139,6 +139,18 @@ params = sum(p.numel() for p in m.parameters())
 print(f'Parameters: {params:,} ({params/1e6:.3f}M)')
 assert params < 1_000_000, f'OVER BUDGET: {params} > 1M'
 print('✅ Under 1M param limit')
+
+# FLOPs check
+try:
+    from fvcore.nn import FlopCountAnalysis
+    inp = torch.randn(1, 1, $ANGRES * 32, $ANGRES * 32)
+    flops = FlopCountAnalysis(m, inp).total()
+    gflops = flops / 1e9
+    print(f'FLOPs: {flops:,} ({gflops:.2f}G)')
+    assert gflops < 20.0, f'OVER BUDGET: {gflops:.2f}G > 20G'
+    print('✅ Under 20G FLOPs limit')
+except ImportError:
+    print('⚠️  fvcore not installed, skipping FLOPs check')
 "
 success "Model verification passed"
 
