@@ -61,6 +61,7 @@ check_and_prepare() {
     FILE=$1
     URL=$2
     DEST="datasets/$3"
+    HF_REPO=$4
 
     if [ -d "$DEST" ]; then
         success "Dataset '$3' found (Skipping)"
@@ -74,9 +75,13 @@ check_and_prepare() {
         if [ -n "$URL" ]; then
             warn "'$FILE' not found. Downloading..."
             if [[ "$URL" == *"huggingface.co"* ]]; then
-                wget -O "downloads/$FILE" "$URL"
+                 # Ensure hf_transfer is installed and used for insane speeds
+                 pip install -q -U "huggingface_hub[cli]" hf_transfer
+                 HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download "$HF_REPO" "$FILE" --repo-type dataset --local-dir downloads/
             else
-                gdown --fuzzy "$URL" -O "downloads/$FILE"
+                 # Fallback for Google Drive links (like HCI datasets)
+                 pip install -q gdown
+                 gdown --fuzzy "$URL" -O "downloads/$FILE"
             fi
         fi
     fi
@@ -88,11 +93,11 @@ check_and_prepare() {
     fi
 }
 
-check_and_prepare "EPFL.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/EPFL.zip?download=true" "EPFL"
-check_and_prepare "HCI_new.zip" "https://drive.google.com/file/d/1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9/view?usp=drive_link" "HCI_new"
-check_and_prepare "HCI_old.zip" "https://drive.google.com/file/d/1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG/view?usp=drive_link" "HCI_old"
-check_and_prepare "INRIA_Lytro.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/INRIA_Lytro.zip?download=true" "INRIA_Lytro"
-check_and_prepare "Stanford_Gantry.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/Stanford_Gantry.zip?download=true" "Stanford_Gantry"
+check_and_prepare "EPFL.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/EPFL.zip?download=true" "EPFL" "aaaaaa3232312/efpl"
+check_and_prepare "HCI_new.zip" "https://drive.google.com/file/d/1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9/view?usp=drive_link" "HCI_new" ""
+check_and_prepare "HCI_old.zip" "https://drive.google.com/file/d/1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG/view?usp=drive_link" "HCI_old" ""
+check_and_prepare "INRIA_Lytro.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/INRIA_Lytro.zip?download=true" "INRIA_Lytro" "aaaaaa3232312/efpl"
+check_and_prepare "Stanford_Gantry.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/Stanford_Gantry.zip?download=true" "Stanford_Gantry" "aaaaaa3232312/efpl"
 success "Dataset preparation complete"
 
 # =============================================================================
