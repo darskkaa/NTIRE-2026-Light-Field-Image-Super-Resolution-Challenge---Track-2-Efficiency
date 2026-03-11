@@ -76,9 +76,15 @@ check_and_prepare() {
             warn "'$FILE' not found. Downloading..."
             if [[ "$URL" == *"huggingface.co"* ]]; then
                  # Ensure hf_transfer is installed and used for insane speeds
-                 pip install -q -U huggingface_hub hf_transfer
-                 export PATH="$HOME/.local/bin:$PATH"
-                 HF_HUB_ENABLE_HF_TRANSFER=1 python -m huggingface_hub.cli download "$HF_REPO" "$FILE" --repo-type dataset --local-dir downloads/
+                 pip install -q -U "huggingface_hub[cli]" hf_transfer
+                 
+                 # The VM has pathing issues; find the explicit CLI executable
+                 HF_CLI_BIN=$(find / -name "huggingface-cli" -type f -executable 2>/dev/null | head -n 1)
+                 if [ -z "$HF_CLI_BIN" ]; then
+                     HF_CLI_BIN="huggingface-cli" # fallback
+                 fi
+
+                 HF_HUB_ENABLE_HF_TRANSFER=1 $HF_CLI_BIN download "$HF_REPO" "$FILE" --repo-type dataset --local-dir downloads/
             else
                  # Fallback for Google Drive links (like HCI datasets)
                  pip install -q -U gdown
