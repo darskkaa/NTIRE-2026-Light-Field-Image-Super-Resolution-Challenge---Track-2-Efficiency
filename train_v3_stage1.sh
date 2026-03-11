@@ -74,21 +74,18 @@ check_and_prepare() {
     elif [ ! -f "downloads/$FILE" ]; then
         if [ -n "$URL" ]; then
             warn "'$FILE' not found. Downloading..."
-            if [[ "$URL" == *"huggingface.co"* ]]; then
-                 # Ensure hf_transfer is installed and used for insane speeds
-                 pip install -q -U "huggingface_hub[cli]" hf_transfer
-                 
-                 # The VM has pathing issues; find the explicit CLI executable
-                 HF_CLI_BIN=$(find / -name "huggingface-cli" -type f -executable 2>/dev/null | head -n 1)
-                 if [ -z "$HF_CLI_BIN" ]; then
-                     HF_CLI_BIN="huggingface-cli" # fallback
-                 fi
-
-                 HF_HUB_ENABLE_HF_TRANSFER=1 $HF_CLI_BIN download "$HF_REPO" "$FILE" --repo-type dataset --local-dir downloads/
+            if [[ "$URL" == *"huggingface.co"* ]] && [ -n "$HF_REPO" ]; then
+                 # Use hf_transfer for max speed (works on any huggingface_hub version)
+                 pip install -q -U huggingface_hub hf_transfer 2>/dev/null
+                 HF_HUB_ENABLE_HF_TRANSFER=1 python -c "
+import os; os.environ['HF_HUB_ENABLE_HF_TRANSFER']='1'
+from huggingface_hub import hf_hub_download
+hf_hub_download(repo_id='$HF_REPO', filename='$FILE', repo_type='dataset', local_dir='downloads/')
+print('Download complete: $FILE')
+"
             else
-                 # Fallback for Google Drive links (like HCI datasets)
-                 pip install -q -U gdown
-                 python -m gdown --fuzzy "$URL" -O "downloads/$FILE"
+                 # Fallback: wget for Google Drive or other URLs
+                 wget -O "downloads/$FILE" "$URL" || (pip install -q gdown 2>/dev/null && gdown --fuzzy "$URL" -O "downloads/$FILE")
             fi
         fi
     fi
