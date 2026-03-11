@@ -91,7 +91,7 @@ check_and_prepare() {
 check_and_prepare "EPFL.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/EPFL.zip?download=true" "EPFL"
 check_and_prepare "HCI_new.zip" "https://drive.google.com/file/d/1IasKKF8ivxE_H6Gm7RGdci-cvi-BHfl9/view?usp=drive_link" "HCI_new"
 check_and_prepare "HCI_old.zip" "https://drive.google.com/file/d/1bNYAizmiAqcxiCEjoNM_g9VDkU0RgNRG/view?usp=drive_link" "HCI_old"
-check_and_prepare "INRIA_Lytro.zip" "https://drive.google.com/file/d/1XNMTwczPpooktQUjVWLjgQpXRi-Gf4RQ/view?usp=drive_link" "INRIA_Lytro"
+check_and_prepare "INRIA_Lytro.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/INRIA_Lytro.zip?download=true" "INRIA_Lytro"
 check_and_prepare "Stanford_Gantry.zip" "https://huggingface.co/datasets/aaaaaa3232312/efpl/resolve/main/Stanford_Gantry.zip?download=true" "Stanford_Gantry"
 success "Dataset preparation complete"
 
