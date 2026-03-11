@@ -106,7 +106,7 @@ if [ -n "$(find data_for_training -name "*.h5" | head -1)" ]; then
     success "Training data (.h5) already exists. Skipping generation."
 else
     info "Generating SR_5x5_4x training patches..."
-    python Generate_Data_for_Training.py --angRes 5 --scale_factor 4 --src_data_path ./datasets/ --save_data_path ./ --n_angular_crops 5
+    python Generate_Data_for_Training.py --angRes 5 --scale_factor 4 --src_data_path ./datasets/ --save_data_path ./ --n_angular_crops 1
 fi
 
 if [ -n "$(find data_for_test -name "*.h5" | head -1)" ]; then
