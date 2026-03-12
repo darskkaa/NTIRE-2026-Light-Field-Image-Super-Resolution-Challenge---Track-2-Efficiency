@@ -11,7 +11,7 @@ set -e
 echo "======================================================="
 echo "1. Installing base requirements..."
 echo "======================================================="
-pip install packaging ninja wheel setuptools
+pip install packaging ninja wheel setuptools xlwt
 pip install einops h5py scipy imageio tqdm scikit-image fvcore
 
 echo ""
