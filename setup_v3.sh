@@ -20,7 +20,7 @@ echo "2. Compiling causal-conv1d (Step 1/2 for Mamba)..."
 echo "   NOTE: This will print a ton of warnings. Ignore them!"
 echo "   NOTE: Using --no-build-isolation to use your system's CUDA 13 PyTorch."
 echo "======================================================="
-MAX_JOBS=4 pip install causal-conv1d>=1.2.0 --no-build-isolation --no-cache-dir --force-reinstall
+MAX_JOBS=4 pip install causal-conv1d>=1.2.0 --no-build-isolation --no-deps --no-cache-dir --force-reinstall
 
 echo ""
 echo "======================================================="
@@ -28,7 +28,7 @@ echo "3. Compiling mamba-ssm (Step 2/2 for Mamba)..."
 echo "   NOTE: This will also print scary CUDA/nvcc warnings."
 echo "         It will fall back to native PyTorch when run."
 echo "======================================================="
-MAX_JOBS=4 pip install mamba-ssm --no-build-isolation --no-cache-dir --force-reinstall
+MAX_JOBS=4 pip install mamba-ssm --no-build-isolation --no-deps --no-cache-dir --force-reinstall
 
 echo ""
 echo "======================================================="
