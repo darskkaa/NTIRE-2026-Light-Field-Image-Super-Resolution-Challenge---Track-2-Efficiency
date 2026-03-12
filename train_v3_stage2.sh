@@ -95,14 +95,6 @@ success "Stage 1 checkpoint found: $PRETRAIN_CKPT"
 # =============================================================================
 header "🏋️ Stage 2: Fine-tuning ($EPOCHS Epochs)"
 
-python -c "
-import os, site, ctypes
-for p in site.getsitepackages():
-    libdir = os.path.join(p, 'nvidia', 'cuda_runtime', 'lib')
-    if os.path.exists(os.path.join(libdir, 'libcudart.so.13')):
-        # Load libcudart.so.13 as a global shared library to satisfy .so.12 demands
-        ctypes.CDLL(os.path.join(libdir, 'libcudart.so.13'), mode=ctypes.RTLD_GLOBAL)
-"
 
 python train_mlfim_v3.py \
     --stage finetune \
