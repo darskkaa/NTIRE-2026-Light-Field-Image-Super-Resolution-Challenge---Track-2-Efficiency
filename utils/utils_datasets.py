@@ -282,7 +282,10 @@ def mixup(data, label, alpha=0.2):
 
     # V2: Randomly choose from 7 non-identity transforms for the "other" sample
     # This avoids always using 180° which may collide with the prior augmentation
-    transform = random.randint(1, 7)
+    # C3 FIX: Transforms 4-7 do transpose(1,0) which swaps H↔W — only safe for
+    # square inputs. Restrict to transforms 1-3 (flips/rotations) if non-square.
+    max_transform = 7 if data.shape[0] == data.shape[1] else 3
+    transform = random.randint(1, max_transform)
     if transform == 1:
         data_other = data[:, ::-1].copy()
         label_other = label[:, ::-1].copy()

@@ -527,9 +527,10 @@ def main():
 
         # Fix #5: Only build state dict on save/val epochs to avoid unnecessary CPU copies
         need_save = (epoch + 1) % 20 == 0
-        # Validate every 10 epochs + final epoch
+        # Validate every `step` epochs + final epoch
+        # Z1 FIX: use configurable `step` variable (was hardcoded 10)
         idx_e = epoch + 1
-        need_val = (idx_e % 10 == 0) or (idx_e == args.epoch)
+        need_val = (idx_e % step == 0) or (idx_e == args.epoch)
         state = None
         if need_save or need_val:
             save_path = str(checkpoints_dir) + (
@@ -595,11 +596,14 @@ def main():
             if use_ema_for_val:
                 ema.restore(net)
 
-        # ---- Scheduler step (skip during warmup — warmup handles LR manually) ----
+        # ---- Scheduler step ----
+        # Z3 FIX: Always step scheduler to keep milestone counters aligned.
+        # During warmup, LR is overridden anyway, but the internal counter
+        # must advance so MultiStepLR milestones fire at the right epoch.
         if swa_active:
             swa_model.update_parameters(net)
             swa_scheduler.step()
-        elif epoch >= warmup_epochs:
+        else:
             scheduler.step()
 
     # ---- Post-training: update SWA batch norm if SWA was used ----
@@ -607,7 +611,29 @@ def main():
         logger.log_string('\nUpdating SWA batch norm statistics...')
         # SWA BN update needs the training loader
         torch.optim.swa_utils.update_bn(train_loader, swa_model, device=device)
-        # Save SWA model as the final best
+
+        # Z5 FIX: Validate SWA model to see if it beats best EMA checkpoint
+        logger.log_string('Validating SWA model...')
+        swa_model.eval()
+        swa_psnrs = []
+        with torch.no_grad():
+            for index, test_name in enumerate(test_Names):
+                test_loader = test_Loaders[index]
+                psnr_iter, ssim_iter, _ = run_validation_test(
+                    test_loader, device, swa_model.module, args
+                )
+                swa_psnr_avg = float(np.array(psnr_iter).mean())
+                swa_ssim_avg = float(np.array(ssim_iter).mean())
+                swa_psnrs.append(swa_psnr_avg)
+                logger.log_string(
+                    f'  SWA Val {test_name}: '
+                    f'psnr={swa_psnr_avg:.2f}, ssim={swa_ssim_avg:.3f}'
+                )
+        swa_aggregate_psnr = float(np.mean(swa_psnrs))
+        logger.log_string(f'  SWA Aggregate PSNR: {swa_aggregate_psnr:.2f} dB '
+                          f'(vs best EMA: {best_psnr:.2f} dB)')
+
+        # Save SWA model
         swa_path = str(checkpoints_dir) + f'/{args.model_name}_{stage}_swa.pth'
         swa_state = {
             'epoch': args.epoch,
@@ -617,6 +643,16 @@ def main():
         }
         torch.save(swa_state, swa_path)
         logger.log_string(f'SWA model saved to {swa_path}')
+
+        if swa_aggregate_psnr > best_psnr:
+            best_psnr = swa_aggregate_psnr
+            best_path = str(checkpoints_dir) + (
+                f'/{args.model_name}_{stage}_best.pth'
+            )
+            torch.save(swa_state, best_path)
+            logger.log_string(f'  ★ SWA is NEW BEST: {swa_aggregate_psnr:.2f} dB!')
+        else:
+            logger.log_string(f'  SWA did not beat EMA best ({best_psnr:.2f} dB)')
 
     logger.log_string(f'\n{"="*60}')
     logger.log_string(f'Stage {stage.upper()} complete! Best PSNR: {best_psnr:.2f} dB')

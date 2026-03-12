@@ -49,10 +49,10 @@ ANGRES=5
 SCALE=4
 EPOCHS=200
 BATCH=3               # LFTransMamba Track 2 exact value
-LR=1e-4               # Half of pretrain LR (legacy-matching StepLR step-down)
-GRAD_ACCUM=1           # No grad accum needed (simpler, legacy-matching)
-LOSS_TYPE=charbonnier   # Charbonnier: smooth near-zero gradients for finetune
-SCHED_TYPE=multistep   # MultiStepLR [80, 160] ×0.5
+LR=2e-4               # Legacy-proven: 2e-4 (CosineAnnealing decays it smoothly)
+GRAD_ACCUM=2           # Z4 FIX: Effective BS=6 (matches legacy, smoother gradients)
+LOSS_TYPE=l1           # Legacy-proven: L1 (constant gradient, better for this arch)
+SCHED_TYPE=cosine      # Z2 IMPROVEMENT: CosineAnnealing (smoother than legacy StepLR)
 NUM_WORKERS=16
 
 # ---- PATHS ----
@@ -63,9 +63,9 @@ echo ""
 info "Model:          $MODEL_NAME"
 info "Checkpoint:     $PRETRAIN_CKPT"
 info "Epochs:         $EPOCHS"
-info "Batch:          $BATCH (no accumulation)"
-info "LR:             $LR (MultiStepLR [80,160] ×0.5)"
-info "Loss:           $LOSS_TYPE (smooth near-zero gradients)"
+info "Batch:          $BATCH × $GRAD_ACCUM accum = $((BATCH * GRAD_ACCUM)) effective"
+info "LR:             $LR (CosineAnnealingLR → 1e-6)"
+info "Loss:           $LOSS_TYPE (legacy-proven, constant gradient)"
 info "SWA:            Last 10% of training"
 echo ""
 
