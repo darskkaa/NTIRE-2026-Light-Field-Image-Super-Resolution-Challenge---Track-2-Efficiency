@@ -33,7 +33,7 @@ SCALE=4
 EPOCHS=100          # LFTransMamba (1st NTIRE 2025): 100 epochs
 BATCH=3             # LFTransMamba Track 2 exact value
 LR=2e-4             # LFTransMamba Track 2: 2e-4 (not 3e-4)
-MASK_RATIO=0.35     # LFTransMamba paper Table 4: 0.35 slightly beats 0.25 (32.9692 vs 32.9649)
+MASK_RATIO=0.25     # Legacy-proven optimal for 755K model (31.85 dB vs 31.38 dB with 0.35)
 WARMUP=5            # 5-epoch linear warmup (SwinIR/HAT/MambaIR best practice)
 NUM_WORKERS=16
 
