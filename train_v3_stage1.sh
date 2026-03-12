@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# V3 Stage 1: MLFIM Pre-training (100 epochs, Charbonnier loss)
+# V3 Stage 1: MLFIM Pre-training (100 epochs, L1 loss + StepLR + warmup)
 # =============================================================================
 # Usage: bash train_v3_stage1.sh
 # Auto-downloads datasets and generates .h5 if not present.
@@ -33,8 +33,8 @@ SCALE=4
 EPOCHS=100          # LFTransMamba (1st NTIRE 2025): 100 epochs
 BATCH=3             # LFTransMamba Track 2 exact value
 LR=2e-4             # LFTransMamba Track 2: 2e-4 (not 3e-4)
-MASK_RATIO=0.25     # LFTransMamba paper Table 4: 0.25 optimal for Track 2
-SCHED_TYPE=cosine   # CosineAnnealingLR: smooth decay to 1e-6
+MASK_RATIO=0.35     # LFTransMamba paper Table 4: 0.35 slightly beats 0.25 (32.9692 vs 32.9649)
+WARMUP=5            # 5-epoch linear warmup (SwinIR/HAT/MambaIR best practice)
 NUM_WORKERS=16
 
 # ---- PATHS (adjust for your setup) ----
@@ -190,9 +190,10 @@ else
         --lr "$LR" \
         --epoch "$EPOCHS" \
         --mlfim_mask_ratio "$MASK_RATIO" \
-        --loss_type charbonnier \
+        --loss_type l1 \
+        --scheduler_type step \
+        --warmup_epochs "$WARMUP" \
         --num_workers "$NUM_WORKERS" \
-        --scheduler_type "$SCHED_TYPE" \
         --path_for_train "$TRAIN_DATA" \
         --path_for_test "$TEST_DATA" \
         --data_name ALL

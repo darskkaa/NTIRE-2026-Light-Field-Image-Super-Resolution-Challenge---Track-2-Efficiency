@@ -5,11 +5,11 @@
 # Usage: bash train_v3_stage2.sh <path_to_stage1_best.pth>
 #
 # Research-backed hyperparameters:
-#   - LR: 2e-4 (LFTransMamba default)
+#   - LR: 1e-4 (half of pretrain, LFTransMamba StepLR step-down)
 #   - Optimizer: Adam β=(0.99, 0.999) (LFTransMamba exact)
-#   - Scheduler: CosineAnnealingLR to eta_min=1e-6 (smooth decay — no plateau)
-#   - Loss: Pure Charbonnier (smooth L1, better near-zero gradients)
-#   - Grad accum 2 steps → effective batch=6
+#   - Scheduler: MultiStepLR [80, 160] ×0.5 (extended 3-phase decay)
+#   - Loss: Charbonnier (smoother near-zero gradients for fine-tuning)
+#   - SWA: Final 10% of training for flatter optima
 # =============================================================================
 
 set -e
@@ -48,10 +48,10 @@ ANGRES=5
 SCALE=4
 EPOCHS=200
 BATCH=3               # LFTransMamba Track 2 exact value
-LR=2e-4               # LFTransMamba Track 2: 2e-4
-GRAD_ACCUM=2           # Eff batch = 3 × 2 = 6
-LOSS_TYPE=charbonnier   # Charbonnier: smooth L1, better near-zero gradients
-SCHED_TYPE=cosine      # CosineAnnealingLR: smooth decay to 1e-6
+LR=1e-4               # Half of pretrain LR (legacy-matching StepLR step-down)
+GRAD_ACCUM=1           # No grad accum needed (simpler, legacy-matching)
+LOSS_TYPE=charbonnier   # Charbonnier: smooth near-zero gradients for finetune
+SCHED_TYPE=multistep   # MultiStepLR [80, 160] ×0.5
 NUM_WORKERS=16
 
 # ---- PATHS ----
@@ -62,9 +62,10 @@ echo ""
 info "Model:          $MODEL_NAME"
 info "Checkpoint:     $PRETRAIN_CKPT"
 info "Epochs:         $EPOCHS"
-info "Batch:          $BATCH × $GRAD_ACCUM accum = $((BATCH * GRAD_ACCUM)) effective"
-info "LR:             $LR (CosineAnnealing to eta_min=1e-6)"
-info "Loss:           $LOSS_TYPE (LFTransMamba default)"
+info "Batch:          $BATCH (no accumulation)"
+info "LR:             $LR (MultiStepLR [80,160] ×0.5)"
+info "Loss:           $LOSS_TYPE (smooth near-zero gradients)"
+info "SWA:            Last 10% of training"
 echo ""
 
 # =============================================================================
@@ -104,6 +105,7 @@ python train_mlfim_v3.py \
     --grad_accum_steps "$GRAD_ACCUM" \
     --loss_type "$LOSS_TYPE" \
     --scheduler_type "$SCHED_TYPE" \
+    --warmup_epochs 0 \
     --use_pre_ckpt \
     --path_pre_pth "$PRETRAIN_CKPT" \
     --num_workers "$NUM_WORKERS" \

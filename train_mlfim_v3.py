@@ -1,24 +1,26 @@
 """
-MLFIM Training V3 — Max-PSNR Pipeline
-======================================
+MLFIM Training V3 — Max-PSNR Pipeline (Fixed)
+===============================================
 Research-backed training recipe for NTIRE 2026 Track 2 Efficiency.
 
-Key design decisions (all backed by published LFSR papers):
-  1. Loss: Charbonnier (smooth L1, better near-zero gradients) — default
-  2. Optimizer: Adam with β1=0.99, β2=0.999 (LFTransMamba 1st NTIRE 2025 exact)
-  3. Scheduler: CosineAnnealingLR to eta_min=1e-6 — smooth decay (default)
-  4. LR: 2e-4 (LFTransMamba default)
-  5. No bfloat16: full float32 training (800K model doesn't need mixed precision)
-  6. EMA: decay=0.997 (LFTransMamba exact)
+Key design decisions (all backed by LFTransMamba 1st NTIRE 2025):
+  1. Loss: L1 for pretrain (LFTransMamba default), Charbonnier for finetune
+  2. Optimizer: Adam with β1=0.99, β2=0.999 (LFTransMamba exact)
+  3. Scheduler: StepLR ×0.5 @80ep for pretrain, MultiStepLR([80,160]) for finetune
+  4. LR: 2e-4 pretrain, 1e-4 finetune (LFTransMamba default)
+  5. Warmup: 5-epoch linear warmup (proven in SwinIR/HAT/MambaIR)
+  6. EMA: decay=0.997 (LFTransMamba exact), bumps to 0.999 at 75%
+  7. SWA: Stochastic Weight Averaging in final 10% epochs (+0.05-0.1 dB)
+  8. No bfloat16: full float32 training
 
 Usage:
   # Stage 1: MLFIM Pre-training (100 epochs)
   python train_mlfim_v3.py --stage pretrain --mlfim_mask_ratio 0.25 --epoch 100 \\
-      --lr 2e-4 --model_name MyEfficientLFNetV3_MLFIM --loss_type charbonnier
+      --lr 2e-4 --model_name MyEfficientLFNetV3_MLFIM --loss_type l1
 
   # Stage 2: Fine-tuning (200 epochs, max-PSNR recipe)
-  python train_mlfim_v3.py --stage finetune --epoch 200 --lr 2e-4 \\
-      --loss_type charbonnier --scheduler_type cosine \\
+  python train_mlfim_v3.py --stage finetune --epoch 200 --lr 1e-4 \\
+      --loss_type charbonnier --scheduler_type multistep \\
       --path_pre_pth <stage1_best.pth> --model_name MyEfficientLFNetV3_MLFIM \\
       --use_pre_ckpt
 """
@@ -32,6 +34,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader
+from torch.optim.swa_utils import AveragedModel, SWALR
 from tqdm import tqdm
 from collections import OrderedDict
 import random
@@ -59,14 +62,19 @@ def parse_mlfim_args():
     parser.add_argument('--loss_warmup_epochs', type=int, default=0,
                         help='Number of finetune epochs to use L1-only before '
                              'switching to composite loss (0 = no warmup)')
-    parser.add_argument('--loss_type', type=str, default='charbonnier',
+    parser.add_argument('--loss_type', type=str, default='l1',
                         choices=['l1', 'charbonnier', 'composite'],
-                        help='Loss function: charbonnier (default, smooth L1), '
-                             'l1, or composite (Charb+FFT+SSIM+Grad+Ang)')
-    parser.add_argument('--scheduler_type', type=str, default='cosine',
-                        choices=['step', 'cosine'],
-                        help='LR scheduler: step (StepLR x0.5/80ep) or '
-                             'cosine (CosineAnnealingLR to eta_min=1e-6)')
+                        help='Loss function: l1 (LFTransMamba default), '
+                             'charbonnier (smooth L1), or composite')
+    parser.add_argument('--scheduler_type', type=str, default='step',
+                        choices=['step', 'cosine', 'multistep'],
+                        help='LR scheduler: step (StepLR x0.5@80ep, default), '
+                             'multistep (MultiStepLR [80,160]), or '
+                             'cosine (CosineAnnealingLR)')
+    parser.add_argument('--warmup_epochs', type=int, default=5,
+                        help='Linear LR warmup epochs (0=disabled, 5=recommended)')
+    parser.add_argument('--swa_start_frac', type=float, default=0.9,
+                        help='Start SWA at this fraction of total epochs (0.9=last 10%%)')
 
     mlfim_args, _ = parser.parse_known_args()
 
@@ -79,6 +87,8 @@ def parse_mlfim_args():
     base_args.loss_warmup_epochs = mlfim_args.loss_warmup_epochs
     base_args.loss_type = mlfim_args.loss_type
     base_args.scheduler_type = mlfim_args.scheduler_type
+    base_args.warmup_epochs = mlfim_args.warmup_epochs
+    base_args.swa_start_frac = mlfim_args.swa_start_frac
 
     return base_args
 
@@ -288,12 +298,15 @@ def main():
     stage = args.stage
     grad_accum = args.grad_accum_steps if stage == 'finetune' else 1
     effective_bs = args.batch_size * grad_accum
+    warmup_epochs = getattr(args, 'warmup_epochs', 5)
+    swa_start_frac = getattr(args, 'swa_start_frac', 0.9)
 
     logger.log_string(f'\n{"="*60}')
     logger.log_string(f'MLFIM Training V3 — Stage: {stage.upper()}')
     logger.log_string(f'Mask ratio: {args.mlfim_mask_ratio}')
     logger.log_string(f'Batch size: {args.batch_size} × {grad_accum} accum = {effective_bs} effective')
-    logger.log_string(f'Loss warmup: {args.loss_warmup_epochs} epochs (L1-only before composite)')
+    logger.log_string(f'LR warmup: {warmup_epochs} epochs')
+    logger.log_string(f'SWA: starts at {swa_start_frac*100:.0f}% of training')
     logger.log_string(f'{"="*60}\n')
 
     # ---- Load checkpoint ----
@@ -390,17 +403,31 @@ def main():
     logger.log_string(f'Optimizer: Adam, LR={lr}, β=(0.99, 0.999)')
 
     # ---- Scheduler ----
-    sched_type = getattr(args, 'scheduler_type', 'cosine')
+    sched_type = getattr(args, 'scheduler_type', 'step')
     if sched_type == 'cosine':
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=args.epoch, eta_min=1e-6
         )
         logger.log_string(f'Scheduler: CosineAnnealingLR (T_max={args.epoch}, eta_min=1e-6)')
+    elif sched_type == 'multistep':
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer, milestones=[80, 160], gamma=0.5
+        )
+        logger.log_string(f'Scheduler: MultiStepLR [80, 160] ×0.5')
     else:
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer, step_size=80, gamma=0.5
         )
         logger.log_string(f'Scheduler: StepLR ×0.5 every 80 epochs')
+
+    # ---- SWA (Stochastic Weight Averaging) ----
+    # Averages weights over final epochs for flatter minima → better generalization
+    # Research: Izmailov et al., "Averaging Weights Leads to Wider Optima" (UAI 2018)
+    swa_start_epoch = int(args.epoch * swa_start_frac)
+    swa_model = AveragedModel(net)
+    swa_scheduler = SWALR(optimizer, swa_lr=1e-5, anneal_epochs=5, anneal_strategy='cos')
+    swa_active = False
+    logger.log_string(f'SWA: will activate at epoch {swa_start_epoch + 1}')
 
     # Restore optimizer/scheduler state on pretrain resume
     if _resume_optimizer is not None and stage == 'pretrain':
@@ -426,6 +453,12 @@ def main():
     step = 10  # Validation frequency (every N epochs)
 
     for epoch in range(start_epoch, args.epoch):
+        # ---- Warmup: linear LR ramp during first N epochs ----
+        if epoch < warmup_epochs:
+            warmup_lr = 1e-5 + (lr - 1e-5) * epoch / max(warmup_epochs, 1)
+            for pg in optimizer.param_groups:
+                pg['lr'] = warmup_lr
+
         current_lr = optimizer.param_groups[0]['lr']
         logger.log_string(f'\nEpoch {epoch + 1}/{args.epoch} '
                           f'[{stage.upper()}, mask={args.mlfim_mask_ratio}, '
@@ -454,6 +487,11 @@ def main():
         # V3 FIX: Target 0.999 (was 0.9999, too aggressive for 0.997 base)
         if epoch >= int(args.epoch * 0.75):
             ema.decay = 0.999
+
+        # ---- SWA activation ----
+        if epoch >= swa_start_epoch and not swa_active:
+            swa_active = True
+            logger.log_string(f'  ★ SWA activated (epoch {epoch + 1})')
 
         loss_train, psnr_train, ssim_train = train_one_epoch(
             train_loader, device, net, criterion, optimizer, args,
@@ -535,7 +573,28 @@ def main():
             if use_ema_for_val:
                 ema.restore(net)
 
-        scheduler.step()
+        # ---- Scheduler step (skip during warmup — warmup handles LR manually) ----
+        if swa_active:
+            swa_model.update_parameters(net)
+            swa_scheduler.step()
+        elif epoch >= warmup_epochs:
+            scheduler.step()
+
+    # ---- Post-training: update SWA batch norm if SWA was used ----
+    if swa_active:
+        logger.log_string('\nUpdating SWA batch norm statistics...')
+        # SWA BN update needs the training loader
+        torch.optim.swa_utils.update_bn(train_loader, swa_model, device=device)
+        # Save SWA model as the final best
+        swa_path = str(checkpoints_dir) + f'/{args.model_name}_{stage}_swa.pth'
+        swa_state = {
+            'epoch': args.epoch,
+            'stage': stage,
+            'state_dict': swa_model.module.state_dict(),
+            'ema_state_dict': ema.state_dict(),
+        }
+        torch.save(swa_state, swa_path)
+        logger.log_string(f'SWA model saved to {swa_path}')
 
     logger.log_string(f'\n{"="*60}')
     logger.log_string(f'Stage {stage.upper()} complete! Best PSNR: {best_psnr:.2f} dB')
