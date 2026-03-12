@@ -95,16 +95,14 @@ success "Stage 1 checkpoint found: $PRETRAIN_CKPT"
 # =============================================================================
 header "🏋️ Stage 2: Fine-tuning ($EPOCHS Epochs)"
 
-# EMERGENCY FIX: Mamba compiled on CUDA 13 sometimes looks for libcudart.so.12.
-# We symlink the existing .so.13 to .so.12 and add it to LD_LIBRARY_PATH.
 python -c "
-import os, site
+import os, site, ctypes
 for p in site.getsitepackages():
     libdir = os.path.join(p, 'nvidia', 'cuda_runtime', 'lib')
     if os.path.exists(os.path.join(libdir, 'libcudart.so.13')):
-        os.system(f'ln -sf {os.path.join(libdir, \"libcudart.so.13\")} {os.path.join(libdir, \"libcudart.so.12\")}')
+        # Load libcudart.so.13 as a global shared library to satisfy .so.12 demands
+        ctypes.CDLL(os.path.join(libdir, 'libcudart.so.13'), mode=ctypes.RTLD_GLOBAL)
 "
-export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/cuda_runtime/lib:$LD_LIBRARY_PATH
 
 python train_mlfim_v3.py \
     --stage finetune \
