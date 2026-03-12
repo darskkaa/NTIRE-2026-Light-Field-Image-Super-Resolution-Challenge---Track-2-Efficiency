@@ -107,7 +107,8 @@ python train_mlfim_v3.py \
     --grad_accum_steps "$GRAD_ACCUM" \
     --loss_type "$LOSS_TYPE" \
     --scheduler_type "$SCHED_TYPE" \
-    --warmup_epochs 0 \
+    --warmup_epochs 3 \
+    --val_step 5 \
     --use_pre_ckpt \
     --path_pre_pth "$PRETRAIN_CKPT" \
     --num_workers "$NUM_WORKERS" \

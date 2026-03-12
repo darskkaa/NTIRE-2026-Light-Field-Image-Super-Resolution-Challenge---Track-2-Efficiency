@@ -13,6 +13,18 @@ from torch.utils.data import DataLoader
 from utils import *
 
 
+# ============================================================================
+# Augmentation Configuration (settable from training script)
+# ============================================================================
+# Training script can modify these BEFORE creating TrainSetDataLoader:
+#   from utils.utils_datasets import AUG_CONFIG
+#   AUG_CONFIG['cutblur_prob'] = 0.10  # reduce for fine-tuning
+AUG_CONFIG = {
+    'cutblur_prob': 0.25,   # CutBlur probability (pretrain default: 25%)
+    'mixup_prob': 0.20,     # MixUp probability (pretrain default: 20%)
+    'mixup_alpha': 0.2,     # Beta distribution alpha (lower = milder mixing)
+}
+
 class TrainSetDataLoader(Dataset):
     def __init__(self, args):
         super(TrainSetDataLoader, self).__init__()
@@ -239,39 +251,63 @@ def cutblur(data, label, alpha=0.7):
 def mixup(data, label, alpha=0.2):
     """Self-MixUp augmentation for PSNR-oriented super-resolution.
 
-    Blends the current (data, label) pair with its own 180°-rotated version
-    using a mixing coefficient λ ~ Beta(alpha, alpha). This is "self-mixup"
-    because we only have access to one sample at a time in __getitem__.
+    Blends the current (data, label) pair with a RANDOMLY TRANSFORMED version
+    of itself using a mixing coefficient λ ~ Beta(alpha, alpha). This is
+    "self-mixup" because we only have access to one sample at a time in
+    __getitem__.
+
+    V2 IMPROVEMENT: Instead of always using 180° rotation (which may collide
+    with identity after the 8-mode augmentation), we randomly choose from 7
+    non-identity transformations. This maximizes the diversity of the blended
+    "other" sample.
 
     Why it works:
       - Forces the network to learn smoother, more generalizable mappings
       - Acts as implicit regularization without adding model complexity
-      - The 180° rotation creates a meaningfully different view of the same
+      - Random transform creates a meaningfully different view of the same
         light field, teaching angular consistency
       - Proven +0.03-0.10 dB on image SR benchmarks (Zhang et al., 2018)
 
     Args:
         data: LR image (H, W) — SAI mosaic
         label: HR image (H, W) — SAI mosaic
-        alpha: Beta distribution parameter (0.2 = mild mixing, preserves
-               most of the original sample. Lower = less aggressive.)
+        alpha: Beta distribution parameter (0.2 = mild mixing)
     Returns:
         Mixed (data, label) pair
     """
     # Sample λ from Beta distribution — concentrates near 0 and 1
-    # with alpha=0.2, ensuring one sample dominates (mild regularization)
     lam = np.random.beta(alpha, alpha)
     # Ensure λ >= 0.5 so the original sample always dominates
-    # This prevents the model from training on mostly-rotated samples
     lam = max(lam, 1.0 - lam)
 
-    # Create the "other" sample via 180° rotation (same image, different view)
-    data_rot = data[::-1, ::-1].copy()
-    label_rot = label[::-1, ::-1].copy()
+    # V2: Randomly choose from 7 non-identity transforms for the "other" sample
+    # This avoids always using 180° which may collide with the prior augmentation
+    transform = random.randint(1, 7)
+    if transform == 1:
+        data_other = data[:, ::-1].copy()
+        label_other = label[:, ::-1].copy()
+    elif transform == 2:
+        data_other = data[::-1, :].copy()
+        label_other = label[::-1, :].copy()
+    elif transform == 3:
+        data_other = data[::-1, ::-1].copy()
+        label_other = label[::-1, ::-1].copy()
+    elif transform == 4:
+        data_other = data.transpose(1, 0).copy()
+        label_other = label.transpose(1, 0).copy()
+    elif transform == 5:
+        data_other = data.transpose(1, 0)[:, ::-1].copy()
+        label_other = label.transpose(1, 0)[:, ::-1].copy()
+    elif transform == 6:
+        data_other = data.transpose(1, 0)[::-1, :].copy()
+        label_other = label.transpose(1, 0)[::-1, :].copy()
+    else:  # 7
+        data_other = data.transpose(1, 0)[::-1, ::-1].copy()
+        label_other = label.transpose(1, 0)[::-1, ::-1].copy()
 
-    # Blend: λ * original + (1-λ) * rotated
-    data_mixed = np.asarray(lam * data + (1.0 - lam) * data_rot, dtype=data.dtype)
-    label_mixed = np.asarray(lam * label + (1.0 - lam) * label_rot, dtype=label.dtype)
+    # Blend: λ * original + (1-λ) * transformed
+    data_mixed = np.asarray(lam * data + (1.0 - lam) * data_other, dtype=data.dtype)
+    label_mixed = np.asarray(lam * label + (1.0 - lam) * label_other, dtype=label.dtype)
 
     return data_mixed, label_mixed
 
@@ -279,8 +315,6 @@ def mixup(data, label, alpha=0.2):
 def augmentation(data, label):
     # 8-mode deterministic spatial augmentation (LFTransMamba-style).
     # Covers all Dihedral-4 symmetries: identity + 3 rotations × (original + flipped).
-    # Previous code only had 4 probabilistic modes (flip + transpose) — missing
-    # half the augmentation set. This is expected to gain ~0.05-0.15 dB PSNR.
     mode = random.randint(0, 7)
     if mode == 0:
         pass  # identity
@@ -306,14 +340,16 @@ def augmentation(data, label):
         data = data.transpose(1, 0)[::-1, ::-1]  # 90° + 180°
         label = label.transpose(1, 0)[::-1, ::-1]
 
-    # CutBlur with 25% probability (Yoo et al., CVPR 2020)
-    if random.random() < 0.25:
+    # CutBlur (Yoo et al., CVPR 2020) — configurable probability
+    cutblur_p = AUG_CONFIG.get('cutblur_prob', 0.25)
+    if cutblur_p > 0 and random.random() < cutblur_p:
         data, label = cutblur(data, label, alpha=0.7)
 
-    # MixUp with 20% probability (self-mixup with 180° rotated version)
-    # Applied last to blend already-augmented samples for maximum diversity
-    if random.random() < 0.20:
-        data, label = mixup(data, label, alpha=0.2)
+    # MixUp (self-mixup with random transform) — configurable probability
+    mixup_p = AUG_CONFIG.get('mixup_prob', 0.20)
+    mixup_a = AUG_CONFIG.get('mixup_alpha', 0.2)
+    if mixup_p > 0 and random.random() < mixup_p:
+        data, label = mixup(data, label, alpha=mixup_a)
 
     return data, label
 

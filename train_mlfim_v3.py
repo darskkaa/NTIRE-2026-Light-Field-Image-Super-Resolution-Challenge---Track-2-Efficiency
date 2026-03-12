@@ -43,7 +43,7 @@ import random
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils.utils import *
-from utils.utils_datasets import TrainSetDataLoader, MultiTestSetDataLoader
+from utils.utils_datasets import TrainSetDataLoader, MultiTestSetDataLoader, AUG_CONFIG
 from train import test as run_validation_test
 
 
@@ -75,6 +75,8 @@ def parse_mlfim_args():
                         help='Linear LR warmup epochs (0=disabled, 5=recommended)')
     parser.add_argument('--swa_start_frac', type=float, default=0.9,
                         help='Start SWA at this fraction of total epochs (0.9=last 10%%)')
+    parser.add_argument('--val_step', type=int, default=10,
+                        help='Validation frequency in epochs (default: 10, use 5 for finetune)')
 
     mlfim_args, _ = parser.parse_known_args()
 
@@ -89,6 +91,7 @@ def parse_mlfim_args():
     base_args.scheduler_type = mlfim_args.scheduler_type
     base_args.warmup_epochs = mlfim_args.warmup_epochs
     base_args.swa_start_frac = mlfim_args.swa_start_frac
+    base_args.val_step = mlfim_args.val_step
 
     return base_args
 
@@ -309,6 +312,24 @@ def main():
     logger.log_string(f'SWA: starts at {swa_start_frac*100:.0f}% of training')
     logger.log_string(f'{"="*60}\n')
 
+    # ---- Configure augmentation for this stage ----
+    # Pretrain: aggressive augmentation to build robust features
+    # Finetune: reduced augmentation so optimizer settles into precise minimum
+    if stage == 'finetune':
+        AUG_CONFIG['cutblur_prob'] = 0.10   # Reduced from 0.25 (Z3 audit)
+        AUG_CONFIG['mixup_prob'] = 0.15     # Reduced from 0.20 for precision
+        AUG_CONFIG['mixup_alpha'] = 0.15    # Milder blending for fine-tuning
+        logger.log_string(f'Augmentation: CutBlur={AUG_CONFIG["cutblur_prob"]}, '
+                          f'MixUp={AUG_CONFIG["mixup_prob"]} '
+                          f'(alpha={AUG_CONFIG["mixup_alpha"]})')
+    else:
+        AUG_CONFIG['cutblur_prob'] = 0.25
+        AUG_CONFIG['mixup_prob'] = 0.20
+        AUG_CONFIG['mixup_alpha'] = 0.2
+        logger.log_string(f'Augmentation: CutBlur={AUG_CONFIG["cutblur_prob"]}, '
+                          f'MixUp={AUG_CONFIG["mixup_prob"]} '
+                          f'(alpha={AUG_CONFIG["mixup_alpha"]})')
+
     # ---- Load checkpoint ----
     start_epoch = 0
     _resume_optimizer = None
@@ -450,7 +471,8 @@ def main():
     # ---- Training Loop ----
     logger.log_string('\nStart training...')
     best_psnr = 0.0
-    step = 10  # Validation frequency (every N epochs)
+    step = getattr(args, 'val_step', 10)  # Z4 audit: configurable validation frequency
+    logger.log_string(f'Validation every {step} epochs')
 
     for epoch in range(start_epoch, args.epoch):
         # ---- Warmup: linear LR ramp during first N epochs ----
