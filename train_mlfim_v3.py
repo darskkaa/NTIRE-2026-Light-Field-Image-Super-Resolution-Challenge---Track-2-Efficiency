@@ -423,23 +423,38 @@ def main():
     )
     logger.log_string(f'Optimizer: Adam, LR={lr}, β=(0.99, 0.999)')
 
-    # ---- Scheduler ----
+    # ---- Scheduler (with built-in LinearLR warmup via SequentialLR) ----
     sched_type = getattr(args, 'scheduler_type', 'step')
+    main_epochs = args.epoch - warmup_epochs
     if sched_type == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=args.epoch, eta_min=1e-6
+        main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=main_epochs, eta_min=1e-6
         )
-        logger.log_string(f'Scheduler: CosineAnnealingLR (T_max={args.epoch}, eta_min=1e-6)')
+        logger.log_string(f'Scheduler: CosineAnnealingLR (T_max={main_epochs}, eta_min=1e-6)')
     elif sched_type == 'multistep':
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        main_scheduler = torch.optim.lr_scheduler.MultiStepLR(
             optimizer, milestones=[80, 160], gamma=0.5
         )
         logger.log_string(f'Scheduler: MultiStepLR [80, 160] ×0.5')
     else:
-        scheduler = torch.optim.lr_scheduler.StepLR(
+        main_scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer, step_size=80, gamma=0.5
         )
         logger.log_string(f'Scheduler: StepLR ×0.5 every 80 epochs')
+
+    if warmup_epochs > 0:
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=1e-5 / lr, end_factor=1.0,
+            total_iters=warmup_epochs
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, main_scheduler],
+            milestones=[warmup_epochs],
+        )
+        logger.log_string(f'Warmup: LinearLR {warmup_epochs} epochs (1e-5 → {lr})')
+    else:
+        scheduler = main_scheduler
 
     # ---- SWA (Stochastic Weight Averaging) ----
     # Averages weights over final epochs for flatter minima → better generalization
@@ -475,12 +490,6 @@ def main():
     logger.log_string(f'Validation every {step} epochs')
 
     for epoch in range(start_epoch, args.epoch):
-        # ---- Warmup: linear LR ramp during first N epochs ----
-        if epoch < warmup_epochs:
-            warmup_lr = 1e-5 + (lr - 1e-5) * epoch / max(warmup_epochs, 1)
-            for pg in optimizer.param_groups:
-                pg['lr'] = warmup_lr
-
         current_lr = optimizer.param_groups[0]['lr']
         logger.log_string(f'\nEpoch {epoch + 1}/{args.epoch} '
                           f'[{stage.upper()}, mask={args.mlfim_mask_ratio}, '
@@ -597,9 +606,6 @@ def main():
                 ema.restore(net)
 
         # ---- Scheduler step ----
-        # Z3 FIX: Always step scheduler to keep milestone counters aligned.
-        # During warmup, LR is overridden anyway, but the internal counter
-        # must advance so MultiStepLR milestones fire at the right epoch.
         if swa_active:
             swa_model.update_parameters(net)
             swa_scheduler.step()
