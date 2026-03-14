@@ -470,9 +470,13 @@ def main():
     # Research: Izmailov et al., "Averaging Weights Leads to Wider Optima" (UAI 2018)
     swa_start_epoch = int(args.epoch * swa_start_frac)
     swa_model = AveragedModel(net)
-    swa_scheduler = SWALR(optimizer, swa_lr=1e-5, anneal_epochs=5, anneal_strategy='cos')
+    
+    # FIX: Don't jump LR back up to 1e-5 if cosine already decayed to 1e-6
+    swa_lr = 1e-6 if sched_type == 'cosine' else 1e-5
+    swa_scheduler = SWALR(optimizer, swa_lr=swa_lr, anneal_epochs=5, anneal_strategy='cos')
+    
     swa_active = False
-    logger.log_string(f'SWA: will activate at epoch {swa_start_epoch + 1}')
+    logger.log_string(f'SWA: will activate at epoch {swa_start_epoch + 1} with lr={swa_lr}')
 
     # Restore optimizer/scheduler state on pretrain resume
     if _resume_optimizer is not None and stage == 'pretrain':
