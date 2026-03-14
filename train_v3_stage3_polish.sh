@@ -8,7 +8,7 @@
 # It uses an extremely low LR, ZERO augmentation, and Charbonnier loss to let
 # the model memorize the clean training distribution with sub-pixel precision.
 #
-# Expected improvement: +0.02–0.05 dB on top of Stage 2 best.
+# Expected improvement: +0.03–0.06 dB on top of Stage 2 best.
 # =============================================================================
 
 set -e
@@ -44,12 +44,12 @@ fi
 MODEL_NAME="MyEfficientLFNetV3_MLFIM"
 ANGRES=5
 SCALE=4
-EPOCHS=30              # Short burst — already converged
+EPOCHS=40              # Extended burst to let LR rise then fall naturally
 BATCH=4                # Can use larger batch since no augmentation
-LR=5e-6               # 50x lower than Stage 2 — sub-pixel settling only
+LR=8e-6               # Slightly higher (8e-6) to push out of local minima
 GRAD_ACCUM=1           # No accumulation needed at this LR
 LOSS_TYPE=charbonnier  # Smooth L1 for precise minimum
-SCHED_TYPE=cosine      # 5e-6 → 1e-7
+SCHED_TYPE=cosine      # 8e-6 → 1e-7 over 40 epochs (trickles down in last 20)
 NUM_WORKERS=16
 
 # ---- PATHS ----
@@ -61,7 +61,7 @@ info "Model:          $MODEL_NAME"
 info "Checkpoint:     $FINETUNE_CKPT"
 info "Epochs:         $EPOCHS"
 info "Batch:          $BATCH (no accumulation)"
-info "LR:             $LR → 1e-7 (CosineAnnealingLR ultra-gentle)"
+info "LR:             $LR → 1e-7 (CosineAnnealingLR trickling over 40 epochs)"
 info "Loss:           $LOSS_TYPE"
 info "Augmentation:   DISABLED (zero noise for clean memorization)"
 info "SWA:            DISABLED (too few epochs)"
@@ -105,27 +105,16 @@ python train_mlfim_v3.py \
 
 success "Stage 3 (Polish) complete"
 
-# ---- INFERENCE WITH SELF-ENSEMBLE ----
-header "📊 Inference + Self-Ensemble"
+# ---- INFERENCE FOR SUBMISSION ----
+header "📊 Ready for Generation"
 
-CKPT_DIR="log/SR_5x5_4x/ALL/${MODEL_NAME}/checkpoints"
-POLISH_BEST="${CKPT_DIR}/${MODEL_NAME}_finetune_best.pth"
-
-if [ -f "$POLISH_BEST" ]; then
-    info "Running inference with self-ensemble..."
-    python inference.py --model_name $MODEL_NAME --angRes $ANGRES --scale_factor $SCALE \
-        --use_pre_ckpt --path_pre_pth "$POLISH_BEST" \
-        --path_for_test ./data_for_test/ --data_name ALL \
-        --self_ensemble
-    success "Self-ensemble inference complete"
-else
-    warn "No polished checkpoint found at: $POLISH_BEST"
-fi
+echo "TTA is disabled. Running V4 submission generation on polished weights..."
+python generate_codabench_submission_v4_swa.py
+echo ""
 
 header "🏁 ALL DONE!"
 echo ""
-echo "Expected improvements over Stage 2 (31.90 dB):"
-echo "  [+0.02-0.05 dB] Polish run (ultra-low LR, zero augmentation)"
-echo "  [+0.10-0.15 dB] Self-ensemble (8x geometric averaging)"
-echo "  Total expected: ~32.05-32.10 dB"
+echo "Expected improvements over Stage 2 (31.89 dB):"
+echo "  [+0.03-0.06 dB] Polish run (8e-6 LR, zero augmentation, 40 epochs)"
+echo "  Total expected: ~31.92-31.95 dB (Organic Score)"
 echo ""
