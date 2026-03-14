@@ -370,6 +370,13 @@ def main():
                 _resume_scheduler = ckpt.get('scheduler', None)
                 _resume_ema = ckpt.get('ema_state_dict', None)
 
+            # Stage 3 Polish Fix: If we are in polish mode (signaled by no_augmentation),
+            # args.epoch (e.g., 40) means "40 MORE epochs", not "end at epoch 40".
+            # Otherwise, range(195, 40) is empty and training skips.
+            if getattr(args, 'no_augmentation', False):
+                logger.log_string(f'Polish Mode Detected: Extending absolute total epochs from {args.epoch} to {start_epoch + args.epoch}')
+                args.epoch = start_epoch + args.epoch
+
             # Fix #4: Free checkpoint memory immediately after extracting what we need
             del ckpt
             torch.cuda.empty_cache()
@@ -444,7 +451,17 @@ def main():
 
     # ---- Scheduler (with built-in LinearLR warmup via SequentialLR) ----
     sched_type = getattr(args, 'scheduler_type', 'step')
-    main_epochs = args.epoch - warmup_epochs
+    
+    # Stage 3 Polish Fix: the Cosine curve should span the newly requested epochs (e.g., 40),
+    # not the massive combined absolute length (235).
+    if getattr(args, 'no_augmentation', False):
+        # We previously modified args.epoch to be start_epoch + original args.epoch
+        # So the duration of the curve is exactly (args.epoch - start_epoch)
+        main_epochs = args.epoch - start_epoch
+        main_epochs -= warmup_epochs
+    else:
+        main_epochs = args.epoch - warmup_epochs
+        
     if sched_type == 'cosine':
         main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=main_epochs, eta_min=1e-6
