@@ -546,6 +546,9 @@ def main():
         if epoch >= swa_start_epoch and not swa_active:
             swa_active = True
             logger.log_string(f'  ★ SWA activated (epoch {epoch + 1})')
+            # Force optimizer to SWA LR immediately upon activation
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = swa_lr
 
         loss_train, psnr_train, ssim_train = train_one_epoch(
             train_loader, device, net, criterion, optimizer, args,
