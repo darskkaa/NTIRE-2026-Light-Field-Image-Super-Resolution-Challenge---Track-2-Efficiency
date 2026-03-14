@@ -77,6 +77,8 @@ def parse_mlfim_args():
                         help='Start SWA at this fraction of total epochs (0.9=last 10%%)')
     parser.add_argument('--val_step', type=int, default=10,
                         help='Validation frequency in epochs (default: 10, use 5 for finetune)')
+    parser.add_argument('--no_augmentation', action='store_true', default=False,
+                        help='Disable ALL data augmentation (for Stage 3 polish runs)')
 
     mlfim_args, _ = parser.parse_known_args()
 
@@ -92,6 +94,7 @@ def parse_mlfim_args():
     base_args.warmup_epochs = mlfim_args.warmup_epochs
     base_args.swa_start_frac = mlfim_args.swa_start_frac
     base_args.val_step = mlfim_args.val_step
+    base_args.no_augmentation = mlfim_args.no_augmentation
 
     return base_args
 
@@ -315,7 +318,13 @@ def main():
     # ---- Configure augmentation for this stage ----
     # Pretrain: aggressive augmentation to build robust features
     # Finetune: reduced augmentation so optimizer settles into precise minimum
-    if stage == 'finetune':
+    # Polish (--no_augmentation): ZERO augmentation for clean memorization
+    if getattr(args, 'no_augmentation', False):
+        AUG_CONFIG['cutblur_prob'] = 0.0
+        AUG_CONFIG['mixup_prob'] = 0.0
+        AUG_CONFIG['mixup_alpha'] = 0.0
+        logger.log_string(f'Augmentation: DISABLED (polish mode)')
+    elif stage == 'finetune':
         AUG_CONFIG['cutblur_prob'] = 0.10   # Reduced from 0.25 (Z3 audit)
         AUG_CONFIG['mixup_prob'] = 0.15     # Reduced from 0.20 for precision
         AUG_CONFIG['mixup_alpha'] = 0.15    # Milder blending for fine-tuning
