@@ -513,6 +513,14 @@ def main():
     logger.log_string(f'Validation every {step} epochs')
 
     for epoch in range(start_epoch, args.epoch):
+        # ---- SWA activation (Check before logging epoch) ----
+        if epoch >= swa_start_epoch and not swa_active:
+            swa_active = True
+            logger.log_string(f'\n  ★ SWA activated (epoch {epoch + 1})')
+            # Force optimizer to SWA LR immediately upon activation
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = swa_lr
+
         current_lr = optimizer.param_groups[0]['lr']
         logger.log_string(f'\nEpoch {epoch + 1}/{args.epoch} '
                           f'[{stage.upper()}, mask={args.mlfim_mask_ratio}, '
@@ -541,14 +549,6 @@ def main():
         # V3 FIX: Target 0.999 (was 0.9999, too aggressive for 0.997 base)
         if epoch >= int(args.epoch * 0.75):
             ema.decay = 0.999
-
-        # ---- SWA activation ----
-        if epoch >= swa_start_epoch and not swa_active:
-            swa_active = True
-            logger.log_string(f'  ★ SWA activated (epoch {epoch + 1})')
-            # Force optimizer to SWA LR immediately upon activation
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = swa_lr
 
         loss_train, psnr_train, ssim_train = train_one_epoch(
             train_loader, device, net, criterion, optimizer, args,
