@@ -1722,39 +1722,14 @@ def run_sr_inference(Lr_SAI_y_tensor, net, device, args):
     subLFout = torch.zeros(numU * numV, 1, angRes * args.patch_size_for_test * scale_factor,
                            angRes * args.patch_size_for_test * scale_factor)
 
-    def self_ensemble_forward(net, x, data_info):
-        """8x geometric self-ensemble: 4 rotations × 2 flips, averaged."""
-        outputs = []
-        for flip in [False, True]:
-            for k in range(4):  # 0°, 90°, 180°, 270°
-                inp = x
-                if flip:
-                    inp = torch.flip(inp, [-1])  # horizontal flip
-                if k > 0:
-                    inp = torch.rot90(inp, k, [-2, -1])  # rotate k*90°
-                
-                out = net(inp, data_info)
-                
-                if k > 0:
-                    out = torch.rot90(out, -k, [-2, -1])  # undo rotation
-                if flip:
-                    out = torch.flip(out, [-1])  # undo flip
-                outputs.append(out)
-        return torch.stack(outputs).mean(0)
-
-    # 5. SR each patch (With optional TTA, FP32 enforced)
+    # 5. SR each patch (No TTA — pure forward pass, FP32 enforced)
     data_info = [args.angRes_in, args.angRes_out]
     torch.cuda.empty_cache()
     with torch.no_grad():
         for i in range(0, numU * numV, args.minibatch_for_test):
             end_idx = min(i + args.minibatch_for_test, numU * numV)
             tmp = subLFin[i:end_idx, :, :, :].float()  # FP32 enforcement
-            
-            if getattr(args, 'self_ensemble', False):
-                out = self_ensemble_forward(net, tmp.to(device), data_info)
-            else:
-                out = net(tmp.to(device), data_info)
-                
+            out = net(tmp.to(device), data_info)
             subLFout[i:end_idx, :, :, :] = out.float().cpu()
 
     subLFout = rearrange(subLFout, '(n1 n2) 1 a1h a2w -> n1 n2 a1h a2w', n1=numU, n2=numV)
@@ -1903,8 +1878,6 @@ def main():
                         help="Number of last finetune checkpoints to average for SWA (default: 10)")
     parser.add_argument("--prefer_ema", action="store_true",
                         help="Use ema_state_dict for SWA (default: use raw state_dict to avoid double-smoothing)")
-    parser.add_argument("--self_ensemble", action="store_true",
-                        help="Enable 8x geometric self-ensemble (TTA). Boosts PSNR by ~0.15 dB but multiplies inference time by 8x.")
     # Use parse_known_args instead of parse_args to ignore Jupyter notebook `-f` flags
     args, _ = parser.parse_known_args()
 
@@ -1960,7 +1933,14 @@ def main():
         finetune_ckpts = [f for f in pth_files if 'finetune' in f and 'epoch' in f]
         finetune_ckpts.sort(key=lambda x: int(re.search(r'epoch_(\d+)_model\.pth', os.path.basename(x)).group(1)) if re.search(r'epoch_(\d+)_model\.pth', os.path.basename(x)) else 0)
         
-        if not getattr(args, 'no_swa', False) and len(finetune_ckpts) >= 2:
+        # Check if _finetune_best.pth exists natively (e.g., from Stage 3 Polish)
+        best_native = [f for f in pth_files if 'finetune_best.pth' in f]
+        
+        if best_native:
+            best_ckpt = best_native[0]
+            print(f"Auto-selected absolute best checkpoint: {best_ckpt}")
+            checkpoint = torch.load(best_ckpt, map_location=device)
+        elif not getattr(args, 'no_swa', False) and len(finetune_ckpts) >= 2:
             swa_n = getattr(args, 'swa_n', 10)
             last_n = min(swa_n, len(finetune_ckpts))
             to_average = finetune_ckpts[-last_n:]
