@@ -348,12 +348,22 @@ def main():
         try:
             ckpt = torch.load(args.path_pre_pth, map_location='cpu')
             start_epoch = ckpt.get('epoch', 0)
+            ckpt_stage = ckpt.get('stage', 'pretrain')
             _load_state_dict_flexible(net, ckpt['state_dict'], logger)
             logger.log_string(f'Loaded checkpoint from epoch {start_epoch}')
 
             if stage == 'finetune':
                 logger.log_string('Fine-tuning: masking DISABLED (mask_ratio=0.0)')
-                start_epoch = 0  # Reset epoch counter for fine-tuning
+                # If the checkpoint is from pretrain, we are STARTING fine-tuning.
+                if ckpt_stage == 'pretrain':
+                    start_epoch = 0  # Reset epoch counter for fine-tuning
+                    logger.log_string('Starting fresh fine-tune from pretrain weights')
+                else:
+                    # If the checkpoint is already finetune, we are RESUMING fine-tuning.
+                    logger.log_string('Resuming existing fine-tune run')
+                    _resume_optimizer = ckpt.get('optimizer', None)
+                    _resume_scheduler = ckpt.get('scheduler', None)
+                    _resume_ema = ckpt.get('ema_state_dict', None)
             else:
                 # Pretrain resume: restore optimizer/scheduler state
                 _resume_optimizer = ckpt.get('optimizer', None)
