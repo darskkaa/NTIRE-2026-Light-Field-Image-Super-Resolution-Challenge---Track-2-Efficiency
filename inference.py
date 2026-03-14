@@ -213,36 +213,6 @@ def main(args):
     pass
 
 
-def self_ensemble_forward(net, x, data_info):
-    """8x geometric self-ensemble: 4 rotations × 2 flips, averaged.
-    
-    Runs the model 8 times on geometric transforms of the input,
-    transforms each output back, and averages. This suppresses per-pixel
-    noise and boundary artifacts for +0.10-0.15 dB improvement.
-    
-    Note: Light field patches have angular info encoded spatially
-    (angRes_in * patch_size), so rot90/flip on the full tensor is valid
-    because each sub-aperture image gets the same transform.
-    """
-    outputs = []
-    for flip in [False, True]:
-        for k in range(4):  # 0°, 90°, 180°, 270°
-            inp = x
-            if flip:
-                inp = torch.flip(inp, [-1])  # horizontal flip
-            if k > 0:
-                inp = torch.rot90(inp, k, [-2, -1])  # rotate k*90°
-            
-            out = net(inp, data_info)
-            
-            if k > 0:
-                out = torch.rot90(out, -k, [-2, -1])  # undo rotation
-            if flip:
-                out = torch.flip(out, [-1])  # undo flip
-            outputs.append(out)
-    return torch.stack(outputs).mean(0)
-
-
 def test(test_loader, device, net, args, save_dir=None):
     """Run inference on a test dataset.
 
@@ -278,16 +248,20 @@ def test(test_loader, device, net, args, save_dir=None):
                                args.angRes_in * args.patch_size_for_test * args.scale_factor)
 
         ''' SR the Patches '''
-        for i in range(0, numU * numV, args.minibatch_for_test):
-            tmp = subLFin[i:min(i + args.minibatch_for_test, numU * numV), :, :, :]
-            with torch.no_grad():
-                torch.cuda.empty_cache()
-                if use_ensemble:
-                    out = self_ensemble_forward(net, tmp.to(device), data_info)
-                else:
-                    out = net(tmp.to(device), data_info)
-                # V3 FIX: Move output to CPU to prevent CUDA OOM accumulation
-                subLFout[i:min(i + args.minibatch_for_test, numU * numV), :, :, :] = out.cpu()
+        with torch.no_grad():
+            for i in range(0, numU * numV, args.minibatch_for_test):
+                end_idx = min(i + args.minibatch_for_test, numU * numV)
+                tmp = subLFin[i:end_idx, :, :, :]
+                
+                # Direct forward pass
+                out = net(tmp.to(device), data_info)
+                
+                # Make sure it's a CPU tensor for integration
+                if isinstance(out, (list, tuple)):
+                    # Extract the primary tensor output if the net returns a tuple
+                    out = out[0]
+                
+                subLFout[i:end_idx, :, :, :] = out.cpu()
         subLFout = rearrange(subLFout, '(n1 n2) 1 a1h a2w -> n1 n2 a1h a2w', n1=numU, n2=numV)
 
         ''' Restore the Patches to LFs '''
@@ -340,10 +314,7 @@ if __name__ == '__main__':
     from option import args
     import argparse
     extra_parser = argparse.ArgumentParser(add_help=False)
-    extra_parser.add_argument('--self_ensemble', action='store_true', default=False,
-                              help='Enable 8x geometric self-ensemble (+0.10-0.15 dB, 8x slower)')
     extra_args, _ = extra_parser.parse_known_args()
-    args.self_ensemble = extra_args.self_ensemble
     args.use_pre_ckpt = True
 
     # ---- V3 MLFIM Default Inference ----
