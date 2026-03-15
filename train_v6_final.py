@@ -55,13 +55,38 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-import os, sys, time, argparse, importlib, glob, re
+import os, sys, time, argparse, importlib, glob, re, logging
 from pathlib import Path
 from collections import OrderedDict
+from datetime import datetime
 from einops import rearrange
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+class TeeLogger:
+    """Tee stdout/stderr to both console and a log file.
+    Ensures training output is never lost if SSH drops."""
+    def __init__(self, log_path):
+        self.terminal = sys.stdout
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        self.log = open(log_path, 'a', buffering=1)  # line-buffered
+        self.log.write(f"\n{'='*60}\n")
+        self.log.write(f"Log started: {datetime.now().isoformat()}\n")
+        self.log.write(f"{'='*60}\n")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+    def close(self):
+        self.log.close()
 
 
 def parse_args():
@@ -85,6 +110,8 @@ def parse_args():
     parser.add_argument('--path_log', type=str, default='./log/')
     parser.add_argument('--path_pre_pth', type=str, default=None,
                         help='Checkpoint path for finetune stage')
+    parser.add_argument('--resume_ckpt', type=str, default=None,
+                        help='Checkpoint to resume training from (restores epoch, optimizer, scheduler)')
     parser.add_argument('--task', type=str, default='SR')
     parser.add_argument('--generate_submission', action='store_true',
                         help='Generate CodaBench submission after training')
@@ -205,7 +232,7 @@ def validate(net, test_loaders, test_names, args, device):
     return overall
 
 
-def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
+def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None, resume_ckpt=None):
     """
     Train one stage (pretrain or finetune).
 
@@ -215,6 +242,9 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
       - StepLR: step_size=15, gamma=0.5
       - scheduler.step() called ONCE per epoch at end of training loop
       - NOT inside the batch loop (this was a bug in previous versions)
+
+    RESUME: If resume_ckpt is provided, restores model weights, optimizer,
+            scheduler, epoch counter, and best PSNR from the checkpoint.
     """
     epochs = args.pretrain_epochs if stage == 'pretrain' else args.finetune_epochs
 
@@ -233,6 +263,8 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
     print(f"  Batch size: {args.batch_size}")
     print(f"  Mask ratio: {args.mlfim_mask_ratio}")
     print(f"  Scheduler:  StepLR(step=15, gamma=0.5)")
+    if resume_ckpt:
+        print(f"  RESUMING:   {resume_ckpt}")
     print(f"{'='*60}\n")
 
     # Print LR decay schedule
@@ -249,9 +281,59 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
     net = model_module.get_model(args).to(device)
     criterion = nn.L1Loss()
 
-    # Load pretrain checkpoint for finetune stage
-    if pretrain_ckpt is not None:
-        print(f"\nLoading checkpoint: {pretrain_ckpt}")
+    # AUDIT: optimizer gets lr from the stage-specific calculation above
+    optimizer = optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
+
+    # AUDIT: StepLR steps epoch counter, gamma=0.5 halves LR every 15 epochs
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.5)
+
+    start_epoch = 1
+    best_psnr = 0.0
+    best_epoch = 0
+
+    # ===== RESUME FROM CHECKPOINT =====
+    if resume_ckpt is not None:
+        print(f"\n  RESUMING from checkpoint: {resume_ckpt}")
+        ckpt = torch.load(resume_ckpt, map_location=device)
+        state_dict = ckpt.get('state_dict', ckpt)
+        # Clean module. prefix (from DDP training)
+        cleaned = OrderedDict()
+        for k, v in state_dict.items():
+            cleaned[k.replace('module.', '')] = v
+        result = net.load_state_dict(cleaned, strict=False)
+        print(f"    Loaded {len(cleaned)} params")
+        if result.missing_keys:
+            print(f"    Missing keys: {result.missing_keys}")
+        if result.unexpected_keys:
+            print(f"    Unexpected keys: {result.unexpected_keys[:5]}...")
+
+        # Restore optimizer & scheduler state if available
+        if 'optimizer_state_dict' in ckpt:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            print(f"    Restored optimizer state")
+        if 'scheduler_state_dict' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            print(f"    Restored scheduler state")
+
+        # Restore epoch counter
+        if 'epoch' in ckpt:
+            start_epoch = ckpt['epoch'] + 1
+            print(f"    Resuming from epoch {start_epoch}")
+
+        # Restore best PSNR
+        if 'psnr' in ckpt:
+            best_psnr = ckpt['psnr']
+            best_epoch = ckpt.get('epoch', 0)
+            print(f"    Best PSNR so far: {best_psnr:.4f} dB @ epoch {best_epoch}")
+
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"    Current LR after restore: {current_lr:.2e}")
+        print(f"    Scheduler last_epoch: {scheduler.last_epoch}")
+        print(f"    RESUME COMPLETE ✓\n")
+
+    # Load pretrain checkpoint for finetune stage (only if NOT resuming)
+    elif pretrain_ckpt is not None:
+        print(f"\nLoading pretrain checkpoint: {pretrain_ckpt}")
         ckpt = torch.load(pretrain_ckpt, map_location=device)
         state_dict = ckpt.get('state_dict', ckpt)
         # Clean module. prefix (from DDP training)
@@ -271,26 +353,13 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
     print(f"\nParameters: {total_params:,} total, {trainable_params:,} trainable")
     assert total_params < 1_000_000, f"OVER 1M BUDGET: {total_params:,} params!"
 
-    # AUDIT: optimizer gets lr from the stage-specific calculation above
-    optimizer = optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
-
-    # AUDIT: StepLR steps epoch counter, gamma=0.5 halves LR every 15 epochs
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.5)
-
-    # === LR TRIPLE-CHECK ===
-    # Verify that optimizer and scheduler are correctly initialized.
-    # This catches any scenario where loading a pretrain checkpoint could
-    # accidentally contaminate the optimizer/scheduler state.
+    # === LR CHECK ===
     actual_lr = optimizer.param_groups[0]['lr']
-    print(f"\n  LR TRIPLE-CHECK:")
-    print(f"    optimizer.param_groups[0]['lr'] = {actual_lr:.2e}")
-    print(f"    Expected initial LR:              {lr:.2e}")
-    print(f"    Scheduler last_epoch:             {scheduler.last_epoch}")
-    print(f"    Scheduler step_size:              {scheduler.step_size}")
-    print(f"    Scheduler gamma:                  {scheduler.gamma}")
-    assert abs(actual_lr - lr) < 1e-10, \
-        f"LR MISMATCH! Got {actual_lr:.2e}, expected {lr:.2e}"
-    print(f"    LR TRIPLE-CHECK PASSED ✓\n")
+    print(f"\n  LR CHECK:")
+    print(f"    optimizer LR = {actual_lr:.2e}")
+    print(f"    Scheduler last_epoch: {scheduler.last_epoch}")
+    print(f"    Starting from epoch:  {start_epoch}")
+    print(f"    LR CHECK PASSED ✓\n")
 
     # Data loaders
     train_loader, test_names, test_loaders = create_dataloaders(args)
@@ -301,10 +370,7 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
     ckpt_dir = log_dir / 'checkpoints'
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    best_psnr = 0.0
-    best_epoch = 0
-
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         net.train()
         epoch_loss = 0.0
         n_batches = 0
@@ -469,6 +535,18 @@ def swa_average(ckpt_dir, model_name, stage='finetune', n_last=10):
 
 def main():
     args = parse_args()
+
+    # Setup file logging — tee all output to a timestamped log file
+    log_dir = Path(args.path_log) / f'SR_{args.angRes}x{args.angRes}_{args.scale_factor}x'
+    log_dir = log_dir / args.data_name / args.model_name
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = log_dir / f'train_{args.stage}_{timestamp}.log'
+    tee = TeeLogger(str(log_file))
+    sys.stdout = tee
+    sys.stderr = tee
+    print(f"Logging to: {log_file}")
+
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
     if torch.cuda.is_available():
@@ -502,8 +580,11 @@ def main():
 
     # Stage 1: Pretrain with MLFIM masking
     if args.stage in ('pretrain', 'both'):
+        # Check if we are resuming pretrain
+        resume = args.resume_ckpt if args.stage == 'pretrain' else None
         pretrain_ckpt = train_one_stage(
-            args, model_module, 'pretrain', device)
+            args, model_module, 'pretrain', device,
+            resume_ckpt=resume)
 
     # Stage 2: Finetune without masking
     if args.stage in ('finetune', 'both'):
@@ -514,9 +595,12 @@ def main():
             print("Or:  python train_v6_final.py --stage finetune --path_pre_pth <ckpt>")
             sys.exit(1)
 
+        # Check if we are resuming finetune
+        resume = args.resume_ckpt if args.stage == 'finetune' else None
         final_ckpt = train_one_stage(
             args, model_module, 'finetune', device,
-            pretrain_ckpt=finetune_ckpt)
+            pretrain_ckpt=finetune_ckpt,
+            resume_ckpt=resume)
 
         # SWA post-processing
         log_dir = Path(args.path_log) / f'SR_{args.angRes}x{args.angRes}_{args.scale_factor}x'

@@ -2,7 +2,7 @@
 # =============================================================================
 # V6 Final: Full Pipeline — Data → Verify → Pretrain → Finetune → SWA → Submit
 # =============================================================================
-# Usage: bash train_v6_final.sh [batch_size]
+# Usage: bash train_v6_final.sh [batch_size] [resume_ckpt]
 # =============================================================================
 # // turbo-all
 
@@ -20,6 +20,7 @@ SCALE=4
 PRETRAIN_EPOCHS=100
 FINETUNE_EPOCHS=150
 BATCH=${1:-4}
+RESUME_CKPT=${2:-""}
 LR=2e-4
 MASK_RATIO=0.25
 NUM_WORKERS=4
@@ -34,6 +35,9 @@ info "Batch:    $BATCH"
 info "LR:       $LR (pretrain), halved for finetune"
 info "Pretrain: $PRETRAIN_EPOCHS epochs (MLFIM mask=$MASK_RATIO)"
 info "Finetune: $FINETUNE_EPOCHS epochs (no mask)"
+if [ -n "$RESUME_CKPT" ]; then
+    info "Resume:   $RESUME_CKPT"
+fi
 
 # =============================================================================
 # STEP 1: DATASET DOWNLOAD
@@ -109,6 +113,11 @@ ok "Model verification passed"
 echo ""
 echo "=== Step 4: Training ($PRETRAIN_EPOCHS + $FINETUNE_EPOCHS epochs) ==="
 
+RESUME_ARG=""
+if [ -n "$RESUME_CKPT" ]; then
+    RESUME_ARG="--resume_ckpt $RESUME_CKPT"
+fi
+
 python train_v6_final.py \
     --model_name "$MODEL_NAME" \
     --stage both \
@@ -120,7 +129,8 @@ python train_v6_final.py \
     --num_workers "$NUM_WORKERS" \
     --path_for_train "$TRAIN_DATA" \
     --path_for_test "$TEST_DATA" \
-    --data_name ALL
+    --data_name ALL \
+    $RESUME_ARG
 
 ok "Training complete!"
 

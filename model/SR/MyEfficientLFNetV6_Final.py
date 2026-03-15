@@ -610,6 +610,16 @@ class get_model(nn.Module):
                     mod.weight.data.copy_(
                         sub_kernel.repeat_interleave(scale_sq, dim=0))
 
+        # P1 CRITICAL INIT FIX: Zero-initialize the final convolution so the model
+        # starts by predicting exactly 0 residual (output = bicubic).
+        # This prevents exploding initial gradients and massive loss (e.g. loss=75).
+        # The final conv is the last module in self.upsampling.
+        final_conv = self.upsampling[-1]
+        if isinstance(final_conv, nn.Conv2d):
+            nn.init.zeros_(final_conv.weight)
+            if final_conv.bias is not None:
+                nn.init.zeros_(final_conv.bias)
+
 
 # ============================================================================
 # LOSS — Pure L1 (SOTA for max-PSNR image SR)
