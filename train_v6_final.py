@@ -309,12 +309,10 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
         epoch_loss = 0.0
         n_batches = 0
         t0 = time.time()
+        total_batches = len(train_loader)
+        grad_norm_sum = 0.0
 
         for batch_idx, data in enumerate(train_loader):
-            # Progress every 100 batches so training doesn't look stuck
-            if batch_idx % 100 == 0:
-                print(f"\r  Epoch {epoch}/{epochs} | Batch {batch_idx}/{len(train_loader)}"
-                      f" | Loss: {epoch_loss/max(n_batches,1):.6f}", end="", flush=True)
             lr_data = data[0].to(device)
             hr_data = data[1].to(device)
             data_info = [args.angRes_in, args.angRes_out]
@@ -333,11 +331,26 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
             loss.backward()
 
             # Gradient clipping (prevents explosion with Mamba SSMs)
-            torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=5.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=5.0)
+            grad_norm_sum += grad_norm.item()
 
             optimizer.step()
             epoch_loss += loss.item()
             n_batches += 1
+
+            # Detailed progress every 50 batches
+            if (batch_idx + 1) % 50 == 0 or batch_idx == 0:
+                elapsed = time.time() - t0
+                speed = n_batches / elapsed if elapsed > 0 else 0
+                eta = (total_batches - batch_idx - 1) / speed if speed > 0 else 0
+                avg_loss = epoch_loss / n_batches
+                avg_gnorm = grad_norm_sum / n_batches
+                vram_mb = torch.cuda.memory_allocated(device) / 1024**2 if device.type == 'cuda' else 0
+                print(f"\r  E{epoch:03d} [{batch_idx+1:4d}/{total_batches}] "
+                      f"loss={avg_loss:.5f} |∇|={avg_gnorm:.2f} "
+                      f"lr={optimizer.param_groups[0]['lr']:.1e} "
+                      f"{speed:.1f}b/s ETA={eta:.0f}s "
+                      f"VRAM={vram_mb:.0f}MB", end="", flush=True)
 
         # AUDIT: scheduler.step() called ONCE per epoch, AFTER training loop
         # This is critical — calling inside batch loop causes LR to decay
@@ -347,9 +360,12 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
         avg_loss = epoch_loss / max(n_batches, 1)
         elapsed = time.time() - t0
         current_lr = optimizer.param_groups[0]['lr']
+        avg_gnorm = grad_norm_sum / max(n_batches, 1)
+        speed = n_batches * args.batch_size / elapsed  # samples/sec
 
-        print(f"Epoch {epoch:3d}/{epochs} | Loss: {avg_loss:.6f} | "
-              f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
+        print(f"\n  Epoch {epoch:3d}/{epochs} done | Loss: {avg_loss:.6f} | "
+              f"LR: {current_lr:.2e} | |∇|: {avg_gnorm:.2f} | "
+              f"{speed:.1f} img/s | {elapsed:.0f}s")
 
         # Validate: every 5 epochs, every epoch in last 20, or first epoch
         do_validate = (epoch % 5 == 0 or epoch > epochs - 20 or epoch == 1)
