@@ -41,7 +41,7 @@ info "Finetune: $FINETUNE_EPOCHS epochs (no mask)"
 echo ""
 echo "=== Step 1: Dataset Preparation ==="
 
-pip install gdown -q 2>/dev/null || true
+pip install gdown fvcore -q 2>/dev/null || true
 mkdir -p datasets downloads data_for_training data_for_test
 
 check_and_prepare() {
@@ -99,30 +99,8 @@ fi
 echo ""
 echo "=== Step 3: Model Verification ==="
 
-python -c "
-import torch, sys
-sys.path.insert(0, '.')
-from model.SR.${MODEL_NAME} import get_model
-
-class A:
-    angRes_in = $ANGRES
-    scale_factor = $SCALE
-    mlfim_mask_ratio = 0.0
-
-m = get_model(A())
-params = sum(p.numel() for p in m.parameters())
-print(f'Parameters: {params:,} ({params/1e6:.3f}M)')
-assert params < 1_000_000, f'OVER BUDGET: {params} > 1M'
-
-# Forward pass test
-x = torch.randn(1, 1, $ANGRES*32, $ANGRES*32)
-with torch.no_grad():
-    y = m(x, [$ANGRES, $ANGRES])
-expected = (1, 1, $ANGRES*32*$SCALE, $ANGRES*32*$SCALE)
-assert y.shape == torch.Size(expected), f'Shape error: {y.shape} != {expected}'
-print(f'Forward pass: {tuple(x.shape)} -> {tuple(y.shape)} OK')
-print('Model verification PASSED')
-" || err "Model verification FAILED!"
+info "Running comprehensive model verification (params, FLOPs, ICNR, forward pass)..."
+python verify_v6_final.py --device cuda:0 --detailed || err "Model verification FAILED!"
 ok "Model verification passed"
 
 # =============================================================================
