@@ -502,16 +502,27 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None, resum
             # Free forward pass intermediates
             del sr, lr_data, hr_data, loss
 
-            # Print progress only at end of epoch (once per epoch, not every N batches)
+            # Print progress only at end of epoch (once per epoch)
             if batch_idx + 1 == total_batches:
                 elapsed_so_far = time.time() - t0
                 speed_b = n_batches / elapsed_so_far if elapsed_so_far > 0 else 0
+                
+                # Calculate ETA for the rest of the STAGE (not just this epoch)
+                remaining_epochs = epochs - epoch
+                time_per_epoch = elapsed_so_far
+                eta_seconds = (remaining_epochs * time_per_epoch)
+                eta_hours = int(eta_seconds // 3600)
+                eta_mins = int((eta_seconds % 3600) // 60)
+                
                 avg_loss_so_far = epoch_loss / n_batches
                 avg_gnorm_so_far = grad_norm_sum / n_batches
                 vram_mb = torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
                 print(f"  E{epoch:03d} [{n_batches}/{total_batches}] "
                       f"loss={avg_loss_so_far:.5f} |g|={avg_gnorm_so_far:.2f} "
-                      f"lr={current_lr:.1e} {speed_b:.1f}b/s "
+                      f"lr={current_lr:.1e} | "
+                      f"{speed_b:.1f} batch/s | "
+                      f"Epoch Time: {time_per_epoch:.0f}s | "
+                      f"Stage ETA: {eta_hours}h{eta_mins}m | "
                       f"VRAM={vram_mb:.0f}MB")
 
         # AUDIT: scheduler.step() called ONCE per epoch, AFTER training loop
