@@ -311,6 +311,10 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None):
         t0 = time.time()
 
         for batch_idx, data in enumerate(train_loader):
+            # Progress every 100 batches so training doesn't look stuck
+            if batch_idx % 100 == 0:
+                print(f"\r  Epoch {epoch}/{epochs} | Batch {batch_idx}/{len(train_loader)}"
+                      f" | Loss: {epoch_loss/max(n_batches,1):.6f}", end="", flush=True)
             lr_data = data[0].to(device)
             hr_data = data[1].to(device)
             data_info = [args.angRes_in, args.angRes_out]
