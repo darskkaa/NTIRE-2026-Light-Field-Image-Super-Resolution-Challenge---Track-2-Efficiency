@@ -461,12 +461,12 @@ def main():
     print("\n--- Model Verification ---")
     test_args = argparse.Namespace(**vars(args))
     test_args.mlfim_mask_ratio = 0.0
-    test_model = model_module.get_model(test_args)
+    test_model = model_module.get_model(test_args).to(device)
     params = sum(p.numel() for p in test_model.parameters())
     print(f"Parameters: {params:,} ({params/1e6:.3f}M)")
     assert params < 1_000_000, f"OVER BUDGET: {params:,} > 1M"
-    # Quick forward test
-    test_x = torch.randn(1, 1, args.angRes * 32, args.angRes * 32)
+    # Quick forward test (must be on CUDA — Mamba kernels require it)
+    test_x = torch.randn(1, 1, args.angRes * 32, args.angRes * 32).to(device)
     with torch.no_grad():
         test_y = test_model(test_x, [args.angRes, args.angRes])
     expected = (1, 1, args.angRes * 32 * args.scale_factor,
@@ -475,6 +475,7 @@ def main():
         f"Shape error! Got {test_y.shape}, expected {expected}"
     print(f"Forward pass: {test_x.shape} → {test_y.shape} ✓")
     del test_model, test_x, test_y
+    torch.cuda.empty_cache()
     print("--- Verification passed ---\n")
 
     pretrain_ckpt = None
