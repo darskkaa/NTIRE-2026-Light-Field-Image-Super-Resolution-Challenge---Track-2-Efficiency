@@ -30,7 +30,7 @@ REMOVED (bugs/harmful):
   - res_scale initialized to 0.15-0.2 (gradient collapse risk)
 
 Architecture: IFE → 3×SpaAngFilter → 3×EPISSM → CatFusion → PixelShuffle
-Config: C=48, n_sa=3, n_epi=3, depth=2 → ~763K params
+Config: C=48, n_sa=3, n_epi=2, depth=2 → ~695K params, ~18.1G FLOPs
 
 AUDIT LOG:
   - BMDMambaLayer: 4 independent Mamba(d_model=12) per direction ✓
@@ -421,7 +421,7 @@ class get_model(nn.Module):
         self.scale = getattr(args, "scale_factor", 4)
         C = 48
         self.channels = C
-        n_sa, n_epi, depth = 3, 3, 2
+        n_sa, n_epi, depth = 3, 2, 2  # n_epi=2 to stay under 20G fvcore FLOPs
         d_state, d_conv, expand = 16, 4, 2.0
 
         # MLFIM: masking ratio (0.25 for pretrain, 0.0 for finetune/inference)
@@ -450,7 +450,7 @@ class get_model(nn.Module):
             for _ in range(n_sa)
         ])
 
-        # LSFL: 3× EPISSM
+        # LSFL: 2× EPISSM (reduced from 3 to fit 20G FLOPs budget)
         self.epi_blocks = nn.ModuleList([
             EPISSM(C, self.angRes, depth, d_state, d_conv, expand)
             for _ in range(n_epi)
