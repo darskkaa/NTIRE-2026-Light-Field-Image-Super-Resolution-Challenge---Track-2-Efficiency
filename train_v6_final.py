@@ -462,7 +462,6 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None, resum
         grad_norm_sum = 0.0
 
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"\n--- Epoch {epoch}/{epochs} START [{datetime.now().strftime('%H:%M:%S')}] LR={current_lr:.2e} ---")
 
         for batch_idx, data in enumerate(train_loader):
             lr_data = data[0].to(device)
@@ -502,43 +501,22 @@ def train_one_stage(args, model_module, stage, device, pretrain_ckpt=None, resum
             # Free forward pass intermediates
             del sr, lr_data, hr_data, loss
 
-            # Print progress only at end of epoch (once per epoch)
-            if batch_idx + 1 == total_batches:
-                elapsed_so_far = time.time() - t0
-                speed_b = n_batches / elapsed_so_far if elapsed_so_far > 0 else 0
-                
-                # Calculate ETA for the rest of the STAGE (not just this epoch)
-                remaining_epochs = epochs - epoch
-                time_per_epoch = elapsed_so_far
-                eta_seconds = (remaining_epochs * time_per_epoch)
-                eta_hours = int(eta_seconds // 3600)
-                eta_mins = int((eta_seconds % 3600) // 60)
-                
-                avg_loss_so_far = epoch_loss / n_batches
-                avg_gnorm_so_far = grad_norm_sum / n_batches
-                vram_mb = torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
-                print(f"  E{epoch:03d} [{n_batches}/{total_batches}] "
-                      f"loss={avg_loss_so_far:.5f} |g|={avg_gnorm_so_far:.2f} "
-                      f"lr={current_lr:.1e} | "
-                      f"{speed_b:.1f} batch/s | "
-                      f"Epoch Time: {time_per_epoch:.0f}s | "
-                      f"Stage ETA: {eta_hours}h{eta_mins}m | "
-                      f"VRAM={vram_mb:.0f}MB")
-
         # AUDIT: scheduler.step() called ONCE per epoch, AFTER training loop
-        # This is critical — calling inside batch loop causes LR to decay
-        # n_batches times per epoch instead of once
         scheduler.step()
 
         avg_loss = epoch_loss / max(n_batches, 1)
         elapsed = time.time() - t0
         current_lr = optimizer.param_groups[0]['lr']
         avg_gnorm = grad_norm_sum / max(n_batches, 1)
-        speed = n_batches * args.batch_size / elapsed  # samples/sec
+        remaining_epochs = epochs - epoch
+        eta_seconds = remaining_epochs * elapsed
+        eta_h = int(eta_seconds // 3600)
+        eta_m = int((eta_seconds % 3600) // 60)
+        vram_mb = torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
 
-        print(f"--- Epoch {epoch:3d}/{epochs} DONE [{datetime.now().strftime('%H:%M:%S')}] | "
-              f"Loss: {avg_loss:.6f} | LR: {current_lr:.2e} | |g|: {avg_gnorm:.2f} | "
-              f"{speed:.1f} img/s | {elapsed:.0f}s ---")
+        print(f"  Epoch {epoch:3d}/{epochs} | {n_batches} batches | "
+              f"Loss: {avg_loss:.5f} | LR: {current_lr:.2e} | |g|: {avg_gnorm:.2f} | "
+              f"{elapsed:.0f}s | ETA: {eta_h}h{eta_m:02d}m | VRAM: {vram_mb:.0f}MB")
 
         # Validate: every 5 epochs, every epoch in last 20, or first epoch
         do_validate = (epoch % 5 == 0 or epoch > epochs - 20 or epoch == 1)
