@@ -23,7 +23,7 @@ BATCH=${1:-4}
 RESUME_CKPT=${2:-""}
 LR=2e-4
 MASK_RATIO=0.25
-NUM_WORKERS=4
+NUM_WORKERS=16
 TRAIN_DATA="./data_for_training/"
 TEST_DATA="./data_for_test/"
 
